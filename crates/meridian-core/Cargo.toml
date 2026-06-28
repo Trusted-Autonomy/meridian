@@ -3,8 +3,13 @@ name = "meridian-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+voyage = ["reqwest"]
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+reqwest = { workspace = true, optional = true }

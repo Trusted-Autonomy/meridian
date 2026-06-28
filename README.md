@@ -1,0 +1,204 @@
+# Meridian
+
+Token spend and KPI alignment analytics for AI agent workflows.
+
+Meridian answers: **Where is your team's AI effort going, and does it align with what matters?**
+
+It classifies agent work by business category (code, PM, docs, sales, etc.), scores each category against your company KPIs, and — optionally — generates concrete suggestions for improving alignment.
+
+## Quick start
+
+```bash
+cargo install --git https://github.com/Trusted-Autonomy/meridian
+
+# From a TA project directory (auto-detected):
+meridian analyze
+
+# Standalone — any work log in JSONL format:
+meridian init                                     # creates meridian.toml with example KPIs
+meridian analyze --source jsonl --path work.jsonl
+```
+
+## How it works: bi-prism analysis
+
+Meridian runs two independent scoring passes — the **bi-prism** — giving two orthogonal views of every record:
+
+```
+                    +---------------------+
+  work title -----> | Pass 1: Category    | --> "Code Implementation" (87% confidence)
+                    | (what type?)        |
+                    +---------------------+
+
+                    +---------------------+
+  work title -----> | Pass 2: KPI Align   | --> engineering_velocity: 0.82
+                    | (how aligned?)      |     revenue_growth: 0.11  <- suggest!
+                    +---------------------+
+```
+
+The two passes are independent — category classification doesn't influence KPI alignment scores. This keeps the model honest and makes per-category KPI breakdowns meaningful.
+
+**Default scorer: keyword TF-IDF cosine** — zero API calls, works offline, no setup required. Upgrade to semantic embeddings (Voyage AI) for better accuracy on short or ambiguous titles.
+
+## Data sources
+
+| Source | What it reads | Effort unit |
+|--------|--------------|-------------|
+| `--source ta` | `.ta/velocity-history.jsonl` | seconds (wall clock) |
+| `--source jsonl` | Any JSONL with `{title, id?, tokens_input?, tokens_output?, seconds?}` | tokens or seconds |
+
+### Standalone JSONL format
+
+```jsonl
+{"id": "task-001", "title": "Implement OAuth2 login flow", "tokens_input": 12000, "tokens_output": 4500, "timestamp": "2026-06-01T10:00:00Z"}
+{"id": "task-002", "title": "Write Q2 board deck", "seconds": 7200, "timestamp": "2026-06-02T14:00:00Z"}
+{"id": "task-003", "title": "Debug payment webhook failures", "tokens_input": 8000, "tokens_output": 2000}
+```
+
+Any LLM provider's usage log can be transformed into this format with a simple script. Fields `tokens_input`/`tokens_output` and `seconds` are alternatives — use whichever your source provides.
+
+## Configuration
+
+```bash
+meridian init    # creates meridian.toml in current directory
+```
+
+```toml
+# meridian.toml
+
+[source]
+ta_project_root = "/path/to/TrustedAutonomy"   # or auto-detected from cwd
+# jsonl = "my-usage.jsonl"                     # standalone
+
+[report]
+format = "table"    # table | json | csv
+
+[[kpis]]
+id = "engineering_velocity"
+label = "Engineering Velocity"
+description = "Activities that improve team ability to ship quality software faster"
+weight = 1.0
+
+[[kpis]]
+id = "revenue_growth"
+label = "Revenue Growth"
+description = "Activities that drive or support revenue — sales, features, marketing"
+weight = 1.0
+
+# Optional: semantic embedding backend (improves accuracy on short titles)
+# [embedding]
+# backend = "voyage"     # requires VOYAGE_API_KEY
+# model = "voyage-3-lite"
+
+# Optional: regression suggestions via Claude
+# [suggest]
+# threshold = 0.25       # categories below 25% alignment get suggestions
+# model = "claude-haiku-4-5-20251001"
+# # Reads ANTHROPIC_API_KEY from env
+```
+
+## Commands
+
+```bash
+meridian analyze                     # classify + report (auto-detects source)
+meridian analyze --format json       # JSON output
+meridian analyze --format csv        # CSV output
+
+meridian suggest                     # generate alignment suggestions (requires ANTHROPIC_API_KEY)
+meridian suggest --dry-run           # show which pairs would get suggestions, no API call
+meridian suggest --threshold 0.4    # custom threshold
+
+meridian init                        # create meridian.toml
+```
+
+## Sample output
+
+```
+Meridian - Effort Analysis
+------------------------------------------------------------------------
+Category                 Records       Effort   % Total
+------------------------------------------------------------------------
+Code Implementation           42      145320     48.1%
+  KPI: engineering_velocity:82%  revenue_growth:14%
+Operations & Infrastructure   18       62400     20.7%
+  KPI: engineering_velocity:71%  revenue_growth:9%
+Documentation                 12       41200     13.6%
+  KPI: engineering_velocity:55%  revenue_growth:7%
+Project Management             8       28800      9.5%
+  KPI: engineering_velocity:43%  revenue_growth:31%
+Research & Exploration         5       24000      7.9%
+  KPI: engineering_velocity:38%  revenue_growth:22%
+------------------------------------------------------------------------
+Total: 85 records, 301720 effort points
+```
+
+```
+$ meridian suggest
+
+Low KPI Alignment (3 pairs below 25% threshold):
+  Code Implementation x Revenue Growth - 14%
+  Operations & Infrastructure x Revenue Growth - 9%
+  Documentation x Revenue Growth - 7%
+
+-- Code Implementation x Revenue Growth (14% alignment) --
+  1. Prioritize features that directly appear in customer-facing changelogs -- frame
+     implementation work around user value delivered, not internal refactoring.
+  2. When fixing bugs, link each fix to a customer-reported issue or NPS signal --
+     this surfaces the revenue-impact of reliability work.
+  3. Allocate ~20% of implementation cycles to API/integration surface improvements
+     that unblock sales engineering and partner integrations.
+```
+
+## Embedding backend upgrade
+
+The default keyword scorer works offline with zero cost and is a good starting point. For teams with short or cryptic work titles, switching to semantic embeddings improves classification accuracy significantly.
+
+```bash
+# Get a Voyage AI API key: https://www.voyageai.com
+export VOYAGE_API_KEY=your_key_here
+```
+
+```toml
+# meridian.toml
+[embedding]
+backend = "voyage"
+model = "voyage-3-lite"   # cheapest; use voyage-3 for higher accuracy
+```
+
+Voyage AI embeds categories and KPIs once at startup, then classifies each record with a single cosine similarity lookup — minimal latency, ~$0.00002 per 1K tokens.
+
+## Scoring accuracy: keyword vs. embedding
+
+| Approach | Accuracy (typical) | Cost | Offline? |
+|----------|-------------------|------|---------|
+| Keyword TF-IDF (default) | ~75% for clear titles | Free | Yes |
+| Voyage AI embedding | ~90%+ | ~$0.00002/1K tokens | No |
+
+Use keyword scoring to get started; switch to embeddings when you need higher fidelity or are classifying short/ambiguous titles like `"v0.17.0.10 - Generic Plugin System"`.
+
+## TA integration
+
+Meridian reads Trusted Autonomy's `.ta/velocity-history.jsonl` directly — no changes to TA required.
+
+```bash
+# From any TA project root:
+meridian analyze
+
+# Or with explicit path:
+meridian analyze --source ta --path ~/development/TrustedAutonomy
+```
+
+Planned: `ta meridian` subcommand (TA v0.17.0.12) will wrap these commands so you never need to invoke `meridian` directly.
+
+## Architecture
+
+```
+meridian-core      — UsageRecord, Taxonomy, KeywordScorer, EmbeddingScorer, Embedder trait
+meridian-ingest    — TA adapter (velocity-history.jsonl), generic JSONL, Anthropic CSV stub
+meridian-report    — table/JSON/CSV output, regression suggestion engine
+meridian-config    — meridian.toml loader
+apps/meridian      — CLI binary (analyze, suggest, init)
+```
+
+## License
+
+MIT

@@ -37,3 +37,22 @@ weight = 0.9
 # label = "AI Infrastructure"
 # description = "Building and maintaining AI agent pipelines, LLM integrations, model serving"
 # keywords = ["agent", "llm", "model", "prompt", "inference", "embedding"]
+
+# --- Embedding backend (optional, improves classification accuracy) -----------
+# Default "keyword" scorer works offline with zero API calls.
+# Switch to "voyage" for semantic similarity (better for short/ambiguous titles).
+#
+# [embedding]
+# backend = "voyage"
+# model = "voyage-3-lite"   # cheapest Voyage model; voyage-3 for higher accuracy
+# # api_key = "..."         # prefer VOYAGE_API_KEY env var
+
+# --- Regression Suggestions (optional) ---------------------------------------
+# When `meridian suggest` is run, categories with KPI alignment below `threshold`
+# receive AI-generated suggestions for improving alignment.
+# Requires ANTHROPIC_API_KEY env var.
+#
+# [suggest]
+# threshold = 0.25           # 0-1.0; categories below this get suggestions
+# sample_size = 5            # titles to include as context
+# model = "claude-haiku-4-5-20251001"

@@ -24,6 +24,8 @@ enum Cmd {
     Analyze(commands::analyze::AnalyzeArgs),
     /// Create a meridian.toml with example KPIs in the target directory
     Init(commands::init::InitArgs),
+    /// Suggest how to better align low-scoring categories to KPIs
+    Suggest(commands::suggest::SuggestArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -31,5 +33,6 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Cmd::Analyze(args) => commands::analyze::run(args, &cli.config),
         Cmd::Init(args) => commands::init::run(args),
+        Cmd::Suggest(args) => commands::suggest::run(args, &cli.config),
     }
 }

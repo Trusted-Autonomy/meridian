@@ -13,6 +13,71 @@ pub struct MeridianConfig {
     pub source: SourceConfig,
     #[serde(default)]
     pub report: ReportConfig,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub suggest: SuggestConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    /// "keyword" (default, zero cost) or "voyage" (semantic, requires VOYAGE_API_KEY)
+    #[serde(default = "default_embedding_backend")]
+    pub backend: String,
+    /// Voyage model name (default: voyage-3-lite)
+    pub model: Option<String>,
+    /// Explicit API key (prefer VOYAGE_API_KEY env var instead)
+    pub api_key: Option<String>,
+}
+
+fn default_embedding_backend() -> String {
+    "keyword".to_string()
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_embedding_backend(),
+            model: None,
+            api_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SuggestConfig {
+    /// KPI alignment below this triggers suggestions (0.0–1.0)
+    #[serde(default = "default_threshold")]
+    pub threshold: f32,
+    /// Max record titles to include as context per suggestion
+    #[serde(default = "default_sample_size")]
+    pub sample_size: usize,
+    /// Claude model to use for suggestions
+    #[serde(default = "default_suggest_model")]
+    pub model: String,
+    /// Explicit API key (prefer ANTHROPIC_API_KEY env var instead)
+    pub api_key: Option<String>,
+}
+
+fn default_threshold() -> f32 {
+    0.25
+}
+fn default_sample_size() -> usize {
+    5
+}
+fn default_suggest_model() -> String {
+    "claude-haiku-4-5-20251001".to_string()
+}
+
+impl Default for SuggestConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_threshold(),
+            sample_size: default_sample_size(),
+            model: default_suggest_model(),
+            api_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
