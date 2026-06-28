@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
+use meridian_core::panel::default_panel;
 use meridian_core::taxonomy::{Category, Kpi, Taxonomy};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+pub use meridian_core::panel::PanelMember;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct MeridianConfig {
@@ -17,6 +20,9 @@ pub struct MeridianConfig {
     pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub suggest: SuggestConfig,
+    /// Expert panel for `meridian report`. Falls back to built-in 4-role panel when empty.
+    #[serde(default)]
+    pub panel: Vec<PanelMember>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,6 +138,15 @@ impl MeridianConfig {
             Self::load(path).unwrap_or_default()
         } else {
             Self::default()
+        }
+    }
+
+    /// Returns the user-configured panel if non-empty, otherwise the built-in 4-role panel.
+    pub fn panel_effective(&self) -> Vec<PanelMember> {
+        if self.panel.is_empty() {
+            default_panel()
+        } else {
+            self.panel.clone()
         }
     }
 
