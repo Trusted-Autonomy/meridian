@@ -3,7 +3,7 @@ use crate::result::{ClassifiedRecord, KpiScore};
 use crate::taxonomy::{Category, Kpi};
 use std::collections::HashMap;
 
-fn tokenise(text: &str) -> Vec<String> {
+pub fn tokenise(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() > 2)
@@ -11,7 +11,7 @@ fn tokenise(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn tf_vector(tokens: &[String]) -> HashMap<String, f32> {
+pub fn tf_vector(tokens: &[String]) -> HashMap<String, f32> {
     let mut tf: HashMap<String, f32> = HashMap::new();
     for t in tokens {
         *tf.entry(t.clone()).or_insert(0.0) += 1.0;
@@ -19,7 +19,7 @@ fn tf_vector(tokens: &[String]) -> HashMap<String, f32> {
     tf
 }
 
-fn cosine(a: &HashMap<String, f32>, b: &HashMap<String, f32>) -> f32 {
+pub fn cosine(a: &HashMap<String, f32>, b: &HashMap<String, f32>) -> f32 {
     let dot: f32 = a
         .iter()
         .filter_map(|(k, v)| b.get(k).map(|bv| v * bv))
