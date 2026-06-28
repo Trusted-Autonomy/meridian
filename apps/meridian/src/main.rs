@@ -24,6 +24,13 @@ enum Cmd {
     Analyze(commands::analyze::AnalyzeArgs),
     /// Create a meridian.toml with example KPIs in the target directory
     Init(commands::init::InitArgs),
+    /// Virtual PM mode: interview → generate KPIs → red-team review → write meridian.toml
+    ///
+    /// Subcommands: init (generate KPIs from interview), refine (re-run red team on existing KPIs)
+    ///
+    /// Studio integration note: `pm init --yes` can be run headlessly to generate a draft;
+    /// the interactive review step is skipped and the full review can be presented in Studio UI.
+    Pm(commands::pm::PmArgs),
     /// Expert panel evaluation report for a time window (default: last 7 days)
     Report(commands::report::ReportArgs),
     /// Interactive wizard: detect source, pick domain profile, write meridian.toml
@@ -37,6 +44,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Cmd::Analyze(args) => commands::analyze::run(args, &cli.config),
         Cmd::Init(args) => commands::init::run(args),
+        Cmd::Pm(args) => commands::pm::run(args, &cli.config),
         Cmd::Report(args) => commands::report::run(args, &cli.config),
         Cmd::Setup(args) => commands::setup::run(args),
         Cmd::Suggest(args) => commands::suggest::run(args, &cli.config),
