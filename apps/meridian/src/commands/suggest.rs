@@ -92,7 +92,7 @@ pub fn run(args: SuggestArgs, config_path: &Path) -> Result<()> {
     }
 
     if args.dry_run {
-        println!("\n(dry run — run without --dry-run to generate suggestions via Claude API)");
+        println!("\n(dry run — run without --dry-run to generate suggestions via Claude API or claude CLI)");
         return Ok(());
     }
 
@@ -100,19 +100,22 @@ pub fn run(args: SuggestArgs, config_path: &Path) -> Result<()> {
         .suggest
         .api_key
         .clone()
-        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Anthropic API key required for suggestions.\n\
-                 Set ANTHROPIC_API_KEY env var or add api_key to [suggest] in meridian.toml."
-            )
-        })?;
+        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok());
+
+    let use_claude_cli = api_key.is_none() && suggest_lib::claude_cli_available();
+
+    if api_key.is_none() && !use_claude_cli {
+        anyhow::bail!(
+            "Set ANTHROPIC_API_KEY or install the claude CLI (https://claude.ai/code) to enable suggestions."
+        );
+    }
 
     let suggest_config = suggest_lib::SuggestConfig {
         threshold,
         sample_size: config.suggest.sample_size,
         model: config.suggest.model.clone(),
         api_key,
+        use_claude_cli,
     };
 
     println!();
