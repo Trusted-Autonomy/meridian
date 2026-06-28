@@ -1,0 +1,39 @@
+# meridian.toml — Example configuration
+# Copy to meridian.toml and customise, or run `meridian init` to generate one.
+
+[source]
+# ta_project_root = "/path/to/your/TrustedAutonomy"
+# jsonl = "records.jsonl"
+
+[report]
+format = "table"   # table | json | csv
+
+[[kpis]]
+id = "engineering_velocity"
+label = "Engineering Velocity"
+description = "Activities that improve team ability to ship quality software faster — code, tests, CI/CD, refactoring"
+weight = 1.0
+
+[[kpis]]
+id = "revenue_growth"
+label = "Revenue Growth"
+description = "Activities that directly drive or support revenue — sales, marketing, customer acquisition, product features"
+weight = 1.0
+
+[[kpis]]
+id = "risk_reduction"
+label = "Risk Reduction"
+description = "Activities that reduce security, compliance, operational, or business risk — audits, hardening, documentation"
+weight = 0.8
+
+[[kpis]]
+id = "customer_satisfaction"
+label = "Customer Satisfaction"
+description = "Activities that improve user experience, onboarding, support, and product quality"
+weight = 0.9
+
+# [[categories]]
+# id = "ai_infra"
+# label = "AI Infrastructure"
+# description = "Building and maintaining AI agent pipelines, LLM integrations, model serving"
+# keywords = ["agent", "llm", "model", "prompt", "inference", "embedding"]

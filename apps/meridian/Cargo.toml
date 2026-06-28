@@ -1,0 +1,19 @@
+[package]
+name = "meridian"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "meridian"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+clap.workspace = true
+meridian-core = { path = "../../crates/meridian-core" }
+meridian-ingest = { path = "../../crates/meridian-ingest" }
+meridian-report = { path = "../../crates/meridian-report" }
+meridian-config = { path = "../../crates/meridian-config" }
