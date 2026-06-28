@@ -1,5 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::io::Write as IoWrite;
+use std::process::{Command, Stdio};
 
 use crate::summary::CategorySummary;
 
@@ -7,7 +9,10 @@ pub struct SuggestConfig {
     pub threshold: f32,
     pub sample_size: usize,
     pub model: String,
-    pub api_key: String,
+    /// Explicit API key. When None and use_claude_cli is false, generate_suggestion returns Err.
+    pub api_key: Option<String>,
+    /// Route suggestions through `claude --print` instead of the HTTP API.
+    pub use_claude_cli: bool,
 }
 
 impl Default for SuggestConfig {
@@ -16,12 +21,132 @@ impl Default for SuggestConfig {
             threshold: 0.25,
             sample_size: 5,
             model: "claude-haiku-4-5-20251001".to_string(),
-            api_key: String::new(),
+            api_key: None,
+            use_claude_cli: false,
         }
     }
 }
 
-/// Call Claude API to generate realignment suggestions for a low-scoring category×KPI pair.
+/// Returns true if the `claude` binary is on PATH and responds to --version.
+pub fn claude_cli_available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn build_prompt(
+    config: &SuggestConfig,
+    category_label: &str,
+    kpi_label: &str,
+    kpi_description: &str,
+    current_score: f32,
+    sample_titles: &[String],
+) -> String {
+    let samples = if sample_titles.is_empty() {
+        "(no examples available)".to_string()
+    } else {
+        sample_titles
+            .iter()
+            .take(config.sample_size)
+            .enumerate()
+            .map(|(i, t)| format!("  {}. {}", i + 1, t))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        "You are analyzing how an AI-assisted team's work aligns with company goals.\n\
+         \n\
+         Category: {category}\n\
+         KPI: {kpi} — {kpi_desc}\n\
+         Current alignment score: {score:.0}% (target: >{threshold:.0}%)\n\
+         \n\
+         Recent work titles in this category:\n{samples}\n\
+         \n\
+         Give 2-3 concrete, specific suggestions for how future work in the '{category}' category \
+         could be structured or framed to better advance the '{kpi}' goal. \
+         Be practical — suggest changes to how work is scoped, titled, or prioritized, \
+         not just to add a KPI mention. \
+         Format as a numbered list, one suggestion per line, no preamble.",
+        category = category_label,
+        kpi = kpi_label,
+        kpi_desc = kpi_description,
+        score = current_score * 100.0,
+        threshold = config.threshold * 100.0,
+        samples = samples,
+    )
+}
+
+fn parse_suggestions(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            l.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ')
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Generate suggestions by piping the prompt to `claude --print`.
+/// No API key needed — uses the user's existing claude CLI login.
+pub fn generate_suggestion_via_cli(
+    config: &SuggestConfig,
+    category_label: &str,
+    kpi_label: &str,
+    kpi_description: &str,
+    current_score: f32,
+    sample_titles: &[String],
+) -> Result<Vec<String>> {
+    let prompt = build_prompt(
+        config,
+        category_label,
+        kpi_label,
+        kpi_description,
+        current_score,
+        sample_titles,
+    );
+
+    let mut child = Command::new("claude")
+        .arg("--print")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to start claude CLI: {e}. Install from https://claude.ai/code")
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to claude CLI stdin: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| anyhow::anyhow!("claude CLI wait failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "claude CLI exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(parse_suggestions(&text))
+}
+
+/// Call Claude to generate realignment suggestions for a low-scoring category×KPI pair.
+/// Uses the claude CLI if `use_claude_cli` is true, otherwise calls the Anthropic HTTP API.
 pub fn generate_suggestion(
     config: &SuggestConfig,
     category_label: &str,
@@ -30,6 +155,23 @@ pub fn generate_suggestion(
     current_score: f32,
     sample_titles: &[String],
 ) -> Result<Vec<String>> {
+    if config.use_claude_cli {
+        return generate_suggestion_via_cli(
+            config,
+            category_label,
+            kpi_label,
+            kpi_description,
+            current_score,
+            sample_titles,
+        );
+    }
+
+    let api_key = config.api_key.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Set ANTHROPIC_API_KEY or install the claude CLI (https://claude.ai/code) to enable suggestions."
+        )
+    })?;
+
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize)]
@@ -55,38 +197,13 @@ pub fn generate_suggestion(
         text: String,
     }
 
-    let samples = if sample_titles.is_empty() {
-        "(no examples available)".to_string()
-    } else {
-        sample_titles
-            .iter()
-            .take(config.sample_size)
-            .enumerate()
-            .map(|(i, t)| format!("  {}. {}", i + 1, t))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let prompt = format!(
-        "You are analyzing how an AI-assisted team's work aligns with company goals.\n\
-         \n\
-         Category: {category}\n\
-         KPI: {kpi} — {kpi_desc}\n\
-         Current alignment score: {score:.0}% (target: >{threshold:.0}%)\n\
-         \n\
-         Recent work titles in this category:\n{samples}\n\
-         \n\
-         Give 2-3 concrete, specific suggestions for how future work in the '{category}' category \
-         could be structured or framed to better advance the '{kpi}' goal. \
-         Be practical — suggest changes to how work is scoped, titled, or prioritized, \
-         not just to add a KPI mention. \
-         Format as a numbered list, one suggestion per line, no preamble.",
-        category = category_label,
-        kpi = kpi_label,
-        kpi_desc = kpi_description,
-        score = current_score * 100.0,
-        threshold = config.threshold * 100.0,
-        samples = samples,
+    let prompt = build_prompt(
+        config,
+        category_label,
+        kpi_label,
+        kpi_description,
+        current_score,
+        sample_titles,
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -104,7 +221,7 @@ pub fn generate_suggestion(
 
     let resp: Response = client
         .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &config.api_key)
+        .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .json(&req)
         .send()
@@ -121,18 +238,7 @@ pub fn generate_suggestion(
         .collect::<Vec<_>>()
         .join("");
 
-    let suggestions = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|l| {
-            l.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ')
-                .to_string()
-        })
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    Ok(suggestions)
+    Ok(parse_suggestions(&text))
 }
 
 /// Return (category_id, kpi_label, score) pairs below threshold, sorted by score ascending.
@@ -203,5 +309,30 @@ mod tests {
         assert_eq!(pairs.len(), 3);
         assert!(pairs[0].2 <= pairs[1].2);
         assert!(pairs[1].2 <= pairs[2].2);
+    }
+
+    #[test]
+    fn suggest_via_cli_skips_when_no_claude() {
+        // If the claude binary is not on PATH, skip rather than fail.
+        if !claude_cli_available() {
+            return;
+        }
+        let config = SuggestConfig {
+            use_claude_cli: true,
+            ..Default::default()
+        };
+        let result = generate_suggestion_via_cli(
+            &config,
+            "Code Implementation",
+            "Engineering Velocity",
+            "Ship quality features faster",
+            0.1,
+            &["implement auth".to_string(), "fix login bug".to_string()],
+        );
+        assert!(result.is_ok(), "CLI suggestion failed: {:?}", result.err());
+        assert!(
+            !result.unwrap().is_empty(),
+            "CLI suggestion returned no lines"
+        );
     }
 }
