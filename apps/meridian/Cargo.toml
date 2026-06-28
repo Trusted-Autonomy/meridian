@@ -17,3 +17,5 @@ meridian-core = { path = "../../crates/meridian-core" }
 meridian-ingest = { path = "../../crates/meridian-ingest" }
 meridian-report = { path = "../../crates/meridian-report" }
 meridian-config = { path = "../../crates/meridian-config" }
+dialoguer.workspace = true
+console.workspace = true

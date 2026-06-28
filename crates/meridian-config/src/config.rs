@@ -106,6 +106,8 @@ fn default_weight() -> f32 {
 pub struct SourceConfig {
     pub ta_project_root: Option<String>,
     pub jsonl: Option<String>,
+    /// Path to a Claude Code projects directory (default: ~/.claude/projects)
+    pub claude_code_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

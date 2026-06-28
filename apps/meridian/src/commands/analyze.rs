@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 use meridian_config::MeridianConfig;
 use meridian_core::scorer::KeywordScorer;
-use meridian_ingest::{generic, ta::TaSource};
+use meridian_ingest::{claude_code, generic, ta::TaSource};
 use meridian_report::{export, summary, table};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,8 @@ pub fn run(args: AnalyzeArgs, config_path: &Path) -> Result<()> {
         .or_else(|| {
             if config.source.ta_project_root.is_some() {
                 Some("ta")
+            } else if config.source.claude_code_dir.is_some() {
+                Some("claude-code")
             } else if config.source.jsonl.is_some() {
                 Some("jsonl")
             } else {
@@ -88,14 +90,39 @@ pub fn run(args: AnalyzeArgs, config_path: &Path) -> Result<()> {
             } else if let Some(p) = config.source.jsonl.as_deref() {
                 generic::load_jsonl(Path::new(p))?
             } else {
-                bail!(
-                    "No data source found. Run from a TA project directory, or:\n\
-                     \n  meridian analyze --source jsonl --path records.jsonl\n\
-                     \n  Or set [source] in meridian.toml"
-                );
+                let cc_dir = config
+                    .source
+                    .claude_code_dir
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(claude_code::default_projects_dir);
+                if cc_dir.exists() {
+                    eprintln!("Auto-detected Claude Code source: {}", cc_dir.display());
+                    claude_code::load_all(&cc_dir)?
+                } else {
+                    bail!(
+                        "No data source found. Options:\n\
+                         \n  meridian analyze --source ta           (TA project in cwd)\
+                         \n  meridian analyze --source claude-code  (Claude Code sessions)\
+                         \n  meridian analyze --source jsonl --path records.jsonl\
+                         \n\nOr set [source] in meridian.toml"
+                    );
+                }
             }
         }
-        other => bail!("Unknown source '{}'. Valid values: ta, jsonl", other),
+        "claude-code" => {
+            let dir = args
+                .path
+                .clone()
+                .or_else(|| config.source.claude_code_dir.as_deref().map(PathBuf::from))
+                .unwrap_or_else(claude_code::default_projects_dir);
+            eprintln!("Loading Claude Code sessions from: {}", dir.display());
+            claude_code::load_all(&dir)?
+        }
+        other => bail!(
+            "Unknown source '{}'. Valid values: ta, jsonl, claude-code",
+            other
+        ),
     };
 
     if records.is_empty() {

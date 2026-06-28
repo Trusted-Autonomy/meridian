@@ -3,7 +3,7 @@ use clap::Args;
 use meridian_config::MeridianConfig;
 use meridian_core::record::UsageRecord;
 use meridian_core::scorer::KeywordScorer;
-use meridian_ingest::{generic, ta::TaSource};
+use meridian_ingest::{claude_code, generic, ta::TaSource};
 use meridian_report::{suggest as suggest_lib, summary};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -192,13 +192,31 @@ fn load_records(args: &SuggestArgs, config: &MeridianConfig) -> Result<Vec<Usage
                 })?;
             generic::load_jsonl(path)
         }
+        "claude-code" => {
+            let dir = args
+                .path
+                .clone()
+                .or_else(|| config.source.claude_code_dir.as_deref().map(PathBuf::from))
+                .unwrap_or_else(claude_code::default_projects_dir);
+            claude_code::load_all(&dir)
+        }
         _ => {
             if let Some(vel) = TaSource::discover(Path::new(".")) {
                 TaSource::load_velocity(&vel)
             } else if let Some(p) = config.source.jsonl.as_deref() {
                 generic::load_jsonl(Path::new(p))
             } else {
-                bail!("No data source found. Use --source ta or --source jsonl --path file.jsonl")
+                let cc_dir = config
+                    .source
+                    .claude_code_dir
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(claude_code::default_projects_dir);
+                if cc_dir.exists() {
+                    claude_code::load_all(&cc_dir)
+                } else {
+                    bail!("No data source found. Use --source ta, --source claude-code, or --source jsonl --path file.jsonl")
+                }
             }
         }
     }
