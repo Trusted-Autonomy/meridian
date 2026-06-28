@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use meridian_core::metric::Metric;
 use meridian_core::panel::default_panel;
 use meridian_core::taxonomy::{Category, Kpi, Taxonomy};
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,9 @@ pub struct KpiConfig {
     pub description: String,
     #[serde(default = "default_weight")]
     pub weight: f32,
+    /// Measurable metrics nested under this KPI (written as [[kpis.metrics]] in TOML).
+    #[serde(default)]
+    pub metrics: Vec<Metric>,
 }
 
 fn default_weight() -> f32 {
@@ -175,6 +179,7 @@ impl MeridianConfig {
                 label: k.label.clone(),
                 description: k.description.clone(),
                 weight: k.weight,
+                metrics: k.metrics.clone(),
             })
             .collect();
 

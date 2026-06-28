@@ -1,3 +1,4 @@
+use crate::metric::Metric;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +17,9 @@ pub struct Kpi {
     pub description: String,
     #[serde(default = "default_weight")]
     pub weight: f32,
+    /// Measurable metrics that track progress toward this KPI.
+    #[serde(default)]
+    pub metrics: Vec<Metric>,
 }
 
 fn default_weight() -> f32 {

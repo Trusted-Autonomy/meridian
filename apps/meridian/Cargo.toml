@@ -19,3 +19,4 @@ meridian-report = { path = "../../crates/meridian-report" }
 meridian-config = { path = "../../crates/meridian-config" }
 dialoguer.workspace = true
 console.workspace = true
+toml.workspace = true

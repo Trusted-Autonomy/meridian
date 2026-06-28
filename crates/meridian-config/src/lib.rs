@@ -1,2 +1,2 @@
 pub mod config;
-pub use config::MeridianConfig;
+pub use config::{KpiConfig, MeridianConfig};
