@@ -37,6 +37,8 @@ enum Cmd {
     Setup(commands::setup::SetupArgs),
     /// Suggest how to better align low-scoring categories to KPIs
     Suggest(commands::suggest::SuggestArgs),
+    /// Start an MCP server exposing Meridian analytics as tools
+    Serve(commands::serve::ServeArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,5 +50,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::Report(args) => commands::report::run(args, &cli.config),
         Cmd::Setup(args) => commands::setup::run(args),
         Cmd::Suggest(args) => commands::suggest::run(args, &cli.config),
+        Cmd::Serve(args) => commands::serve::run(args, &cli.config),
     }
 }
