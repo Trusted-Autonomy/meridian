@@ -2,12 +2,13 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Args;
 use meridian_config::MeridianConfig;
-use meridian_core::record::UsageRecord;
+use meridian_core::record::{EffortUnits, UsageRecord};
+use meridian_core::result::KpiScore;
 use meridian_core::scorer::KeywordScorer;
+use meridian_core::taxonomy::Kpi;
 use meridian_ingest::{claude_code, generic, ta::TaSource};
 use meridian_report::panel::{PanelResult, PanelScorer};
 use serde_json;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const DISSENT_THRESHOLD: f32 = 0.20;
@@ -153,18 +154,12 @@ pub fn run(args: ReportArgs, config_path: &Path) -> Result<()> {
     let scorer = PanelScorer::new(&panel);
     let results = scorer.score_batch(&records);
 
-    // Also compute top KPI per record if KPIs are configured.
     let taxonomy = config.taxonomy();
     let kpi_scorer = if taxonomy.kpis.is_empty() {
         None
     } else {
         Some(KeywordScorer::new(&taxonomy.categories, &taxonomy.kpis))
     };
-    let kpi_labels: HashMap<String, String> = taxonomy
-        .kpis
-        .iter()
-        .map(|k| (k.id.clone(), k.label.clone()))
-        .collect();
 
     let format = args.format.as_deref().unwrap_or(&config.report.format);
     match format {
@@ -173,7 +168,7 @@ pub fn run(args: ReportArgs, config_path: &Path) -> Result<()> {
             &results,
             &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
             &kpi_scorer,
-            &kpi_labels,
+            &taxonomy.kpis,
         ),
         _ => print_table(
             &results,
@@ -181,11 +176,84 @@ pub fn run(args: ReportArgs, config_path: &Path) -> Result<()> {
             &args.since,
             &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
             &kpi_scorer,
-            &kpi_labels,
+            &taxonomy.kpis,
         ),
     }
 
     Ok(())
+}
+
+fn format_effort(effort: &EffortUnits) -> String {
+    match effort {
+        EffortUnits::Tokens { input, output } => {
+            let total = input + output;
+            if total >= 1_000_000 {
+                format!("{:.1}M", total as f64 / 1_000_000.0)
+            } else if total >= 1_000 {
+                format!("{}K", total / 1_000)
+            } else {
+                format!("{total}")
+            }
+        }
+        EffortUnits::Seconds(s) => {
+            if *s >= 3600 {
+                format!("{:.1}h", *s as f64 / 3600.0)
+            } else if *s >= 60 {
+                format!("{}m", s / 60)
+            } else {
+                format!("{s}s")
+            }
+        }
+        EffortUnits::Unknown => "-".to_string(),
+    }
+}
+
+/// Weighted mean of per-KPI scores, using KPI.weight from config.
+fn kpi_weighted_align(kpi_scores: &[KpiScore], kpis: &[Kpi]) -> f32 {
+    if kpis.is_empty() || kpi_scores.is_empty() {
+        return 0.0;
+    }
+    let total_weight: f32 = kpis.iter().map(|k| k.weight).sum();
+    if total_weight == 0.0 {
+        return 0.0;
+    }
+    let weighted_sum: f32 = kpi_scores
+        .iter()
+        .filter_map(|ks| {
+            kpis.iter()
+                .find(|k| k.id == ks.kpi_id)
+                .map(|k| ks.score * k.weight)
+        })
+        .sum();
+    weighted_sum / total_weight
+}
+
+/// Convert a role ID to a human-readable display string.
+fn display_role(role: &str) -> String {
+    match role {
+        "ceo" => "CEO".to_string(),
+        "cto" => "CTO".to_string(),
+        "cfo" => "CFO".to_string(),
+        _ => role
+            .split('_')
+            .map(|w| {
+                let mut chars = w.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+/// First word of a KPI label, used as a compact identifier in the inline breakdown row.
+fn kpi_short_label<'a>(kpi_id: &'a str, kpis: &'a [Kpi]) -> &'a str {
+    kpis.iter()
+        .find(|k| k.id == kpi_id)
+        .and_then(|k| k.label.split_whitespace().next())
+        .unwrap_or(kpi_id)
 }
 
 fn print_json(results: &[PanelResult]) {
@@ -199,27 +267,28 @@ fn print_csv(
     results: &[PanelResult],
     roles: &[String],
     kpi_scorer: &Option<KeywordScorer>,
-    kpi_labels: &HashMap<String, String>,
+    kpis: &[Kpi],
 ) {
-    // Header
-    let mut header = "timestamp,title,source".to_string();
+    let mut header = "timestamp,title,source,effort".to_string();
     for role in roles {
         header.push(',');
         header.push_str(role);
     }
     header.push_str(",consensus,dissent");
     if kpi_scorer.is_some() {
-        for kpi_id in kpi_labels.keys() {
+        for kpi in kpis {
             header.push(',');
-            header.push_str(kpi_id);
+            header.push_str(&kpi.id);
         }
+        header.push_str(",kpi_align");
     }
     println!("{header}");
 
     for result in results {
         let ts = result.record.timestamp.format("%Y-%m-%dT%H:%M:%SZ");
         let title = result.record.title.replace(',', ";");
-        let mut row = format!("{ts},{title},{}", result.record.source);
+        let effort = format_effort(&result.record.effort);
+        let mut row = format!("{ts},{title},{},{effort}", result.record.source);
 
         for role in roles {
             let score = result
@@ -234,15 +303,17 @@ fn print_csv(
 
         if let Some(ks) = kpi_scorer {
             let classified = ks.classify(&result.record);
-            for kpi_id in kpi_labels.keys() {
+            for kpi in kpis {
                 let score = classified
                     .kpi_scores
                     .iter()
-                    .find(|s| &s.kpi_id == kpi_id)
+                    .find(|s| s.kpi_id == kpi.id)
                     .map(|s| s.score)
                     .unwrap_or(0.0);
                 row.push_str(&format!(",{score:.3}"));
             }
+            let align = kpi_weighted_align(&classified.kpi_scores, kpis);
+            row.push_str(&format!(",{align:.3}"));
         }
         println!("{row}");
     }
@@ -254,35 +325,17 @@ fn print_table(
     since_str: &str,
     roles: &[String],
     kpi_scorer: &Option<KeywordScorer>,
-    kpi_labels: &HashMap<String, String>,
+    kpis: &[Kpi],
 ) {
     let now = Utc::now();
     let from_str = since.format("%Y-%m-%d").to_string();
     let to_str = now.format("%Y-%m-%d").to_string();
     let n = results.len();
-
-    // Abbreviated role labels for column headers.
-    let short_labels: Vec<String> = roles
-        .iter()
-        .map(|r| match r.as_str() {
-            "ceo" => "CEO".to_string(),
-            "cto" => "CTO".to_string(),
-            "head_of_product" => "PROD".to_string(),
-            "head_of_engineering" => "ENG".to_string(),
-            other => {
-                let s: String = other
-                    .split('_')
-                    .map(|w| w.chars().next().unwrap_or(' ').to_uppercase().to_string())
-                    .collect::<Vec<_>>()
-                    .join("");
-                s
-            }
-        })
-        .collect();
+    let has_kpis = kpi_scorer.is_some() && !kpis.is_empty();
 
     println!();
     println!(
-        "Report  {} → {}   ({} session{})",
+        " Report  {} -> {}   ({} session{})",
         from_str,
         to_str,
         n,
@@ -290,57 +343,48 @@ fn print_table(
     );
     println!();
 
-    // Column widths
     let title_w = results
         .iter()
-        .map(|r| r.record.title.len().min(50))
+        .map(|r| r.record.title.len().min(52))
         .max()
         .unwrap_or(20)
-        .max(7); // "Session"
+        .max(7);
 
-    // Header line
-    let role_header: String = short_labels
-        .iter()
-        .map(|l| format!("{:>5}", l))
-        .collect::<Vec<_>>()
-        .join(" ");
+    // Session table header
+    if has_kpis {
+        println!(
+            " {:<title_w$}  {:>6}  {:>9}  {:>9}  !",
+            "Session", "Effort", "Consensus", "KPI-Align"
+        );
+    } else {
+        println!(
+            " {:<title_w$}  {:>6}  {:>9}  {:>7}",
+            "Session", "Effort", "Consensus", "Dissent"
+        );
+    }
+    let rule_len = title_w + 2 + 6 + 2 + 9 + 2 + 9 + 3;
+    println!(" {}", "\u{2500}".repeat(rule_len));
 
-    let has_kpis = kpi_scorer.is_some() && !kpi_labels.is_empty();
-    let kpi_col = if has_kpis { "  Top KPI" } else { "" };
-
-    println!(
-        " {:<title_w$}  {}  {:>9}  {:>7}{}",
-        "Session", role_header, "Consensus", "Dissent", kpi_col
-    );
-
-    let rule_len = title_w + 2 + role_header.len() + 2 + 9 + 2 + 7 + if has_kpis { 10 } else { 0 };
-    println!(" {}", "─".repeat(rule_len));
-
-    // Collect per-role totals for period averages
+    // Accumulators for averages
     let mut role_totals: Vec<f32> = vec![0.0; roles.len()];
     let mut consensus_total = 0.0f32;
     let mut dissent_total = 0.0f32;
+    let mut kpi_align_total = 0.0f32;
     let mut high_dissent: Vec<(&PanelResult, String, String)> = Vec::new();
 
     for result in results {
         let title_trunc: String = result.record.title.chars().take(title_w).collect();
+        let effort_str = format_effort(&result.record.effort);
 
-        let role_scores: String = roles
-            .iter()
-            .enumerate()
-            .map(|(i, role)| {
-                let score = result
-                    .scores
-                    .iter()
-                    .find(|s| &s.role == role)
-                    .map(|s| s.score)
-                    .unwrap_or(0.0);
-                role_totals[i] += score;
-                format!("{:>5.2}", score)
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
+        for (i, role) in roles.iter().enumerate() {
+            let score = result
+                .scores
+                .iter()
+                .find(|s| &s.role == role)
+                .map(|s| s.score)
+                .unwrap_or(0.0);
+            role_totals[i] += score;
+        }
         consensus_total += result.consensus;
         dissent_total += result.dissent;
 
@@ -350,26 +394,38 @@ fn print_table(
             " "
         };
 
-        let top_kpi_col = if has_kpis {
+        if has_kpis {
             let ks = kpi_scorer.as_ref().unwrap();
             let classified = ks.classify(&result.record);
-            let top = classified.kpi_scores.iter().max_by(|a, b| {
-                a.score
-                    .partial_cmp(&b.score)
+            let align = kpi_weighted_align(&classified.kpi_scores, kpis);
+            kpi_align_total += align;
+
+            println!(
+                " {:<title_w$}  {:>6}  {:>9.2}  {:>9.2}  {}",
+                title_trunc, effort_str, result.consensus, align, dissent_flag
+            );
+
+            // Inline per-KPI breakdown row, sorted by score descending.
+            let mut scores_sorted = classified.kpi_scores.clone();
+            scores_sorted.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            top.map(|k| format!("  {}", k.kpi_id)).unwrap_or_default()
+            let kpi_line: String = scores_sorted
+                .iter()
+                .map(|ks| format!("{}: {:.2}", kpi_short_label(&ks.kpi_id, kpis), ks.score))
+                .collect::<Vec<_>>()
+                .join("  ");
+            println!("    \u{25B8} {}", kpi_line);
         } else {
-            String::new()
-        };
-
-        println!(
-            " {:<title_w$}  {}  {:>9.2}  {:>6.2}{}{}",
-            title_trunc, role_scores, result.consensus, result.dissent, dissent_flag, top_kpi_col
-        );
+            println!(
+                " {:<title_w$}  {:>6}  {:>9.2}  {:>7.2}",
+                title_trunc, effort_str, result.consensus, result.dissent
+            );
+        }
 
         if result.dissent > DISSENT_THRESHOLD {
-            // Find champion and skeptic scores for the dissent message.
             let champ_score = result
                 .scores
                 .iter()
@@ -384,34 +440,63 @@ fn print_table(
                 .unwrap_or(0.0);
             high_dissent.push((
                 result,
-                format!("{} {:.2}", result.champion, champ_score),
-                format!("{} {:.2}", result.skeptic, skept_score),
+                format!("{} {:.2}", display_role(&result.champion), champ_score),
+                format!("{} {:.2}", display_role(&result.skeptic), skept_score),
             ));
         }
     }
 
     let count = results.len() as f32;
-    let avg_roles: String = role_totals
-        .iter()
-        .map(|t| format!("{:>5.2}", t / count))
-        .collect::<Vec<_>>()
-        .join(" ");
+    println!(" {}", "\u{2500}".repeat(rule_len));
+    if has_kpis {
+        println!(
+            " {:<title_w$}  {:>6}  {:>9.2}  {:>9.2}",
+            "Period average",
+            "-",
+            consensus_total / count,
+            kpi_align_total / count
+        );
+    } else {
+        println!(
+            " {:<title_w$}  {:>6}  {:>9.2}  {:>7.2}",
+            "Period average",
+            "-",
+            consensus_total / count,
+            dissent_total / count
+        );
+    }
 
-    println!(" {}", "─".repeat(rule_len));
-    println!(
-        " {:<title_w$}  {}  {:>9.2}  {:>7.2}",
-        "Period average",
-        avg_roles,
-        consensus_total / count,
-        dissent_total / count
-    );
+    // Panel averages section
+    if !roles.is_empty() {
+        println!();
+        println!(" PANEL AVERAGES");
+        let role_w = roles
+            .iter()
+            .map(|r| display_role(r).len())
+            .max()
+            .unwrap_or(10);
+        for (i, role) in roles.iter().enumerate() {
+            println!(
+                "   {:<role_w$}  {:.2}",
+                display_role(role),
+                role_totals[i] / count
+            );
+        }
+        println!(
+            "   {:<role_w$}  {:.2}   Dissent {:.2}",
+            "Consensus",
+            consensus_total / count,
+            dissent_total / count
+        );
+    }
 
     if !high_dissent.is_empty() {
         println!();
         println!(" High dissent (>{DISSENT_THRESHOLD:.2}):");
         for (result, champ, skept) in &high_dissent {
-            let title_short: String = result.record.title.chars().take(50).collect();
-            println!("   \"{title_short}\" — {champ} vs {skept}");
+            let title_short: String = result.record.title.chars().take(52).collect();
+            println!("   \"{title_short}\"");
+            println!("     champion: {champ}  skeptic: {skept}");
         }
     }
 
@@ -485,11 +570,123 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "r1");
 
-        // Verify panel scoring works on the filtered set.
         let panel = default_panel();
         let scorer = PanelScorer::new(&panel);
         let results = scorer.score_batch(&records);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].scores.len(), 4);
+    }
+
+    #[test]
+    fn format_effort_tokens() {
+        assert_eq!(
+            format_effort(&EffortUnits::Tokens {
+                input: 300_000,
+                output: 40_000
+            }),
+            "340K"
+        );
+        assert_eq!(
+            format_effort(&EffortUnits::Tokens {
+                input: 900_000,
+                output: 100_000
+            }),
+            "1.0M"
+        );
+    }
+
+    #[test]
+    fn format_effort_seconds() {
+        assert_eq!(format_effort(&EffortUnits::Seconds(90)), "1m");
+        assert_eq!(format_effort(&EffortUnits::Seconds(7200)), "2.0h");
+    }
+
+    #[test]
+    fn format_effort_unknown() {
+        assert_eq!(format_effort(&EffortUnits::Unknown), "-");
+    }
+
+    #[test]
+    fn kpi_weighted_align_equal_weights() {
+        let kpis = vec![
+            Kpi {
+                id: "a".into(),
+                label: "A".into(),
+                description: "".into(),
+                weight: 1.0,
+                metrics: vec![],
+            },
+            Kpi {
+                id: "b".into(),
+                label: "B".into(),
+                description: "".into(),
+                weight: 1.0,
+                metrics: vec![],
+            },
+        ];
+        let scores = vec![
+            KpiScore {
+                kpi_id: "a".into(),
+                score: 0.8,
+            },
+            KpiScore {
+                kpi_id: "b".into(),
+                score: 0.4,
+            },
+        ];
+        let align = kpi_weighted_align(&scores, &kpis);
+        assert!((align - 0.6).abs() < 1e-5, "expected 0.6, got {align}");
+    }
+
+    #[test]
+    fn kpi_weighted_align_unequal_weights() {
+        let kpis = vec![
+            Kpi {
+                id: "a".into(),
+                label: "A".into(),
+                description: "".into(),
+                weight: 2.0,
+                metrics: vec![],
+            },
+            Kpi {
+                id: "b".into(),
+                label: "B".into(),
+                description: "".into(),
+                weight: 1.0,
+                metrics: vec![],
+            },
+        ];
+        let scores = vec![
+            KpiScore {
+                kpi_id: "a".into(),
+                score: 0.9,
+            },
+            KpiScore {
+                kpi_id: "b".into(),
+                score: 0.0,
+            },
+        ];
+        // (0.9*2 + 0.0*1) / 3 = 0.6
+        let align = kpi_weighted_align(&scores, &kpis);
+        assert!((align - 0.6).abs() < 1e-5, "expected 0.6, got {align}");
+    }
+
+    #[test]
+    fn kpi_weighted_align_empty() {
+        let align = kpi_weighted_align(&[], &[]);
+        assert_eq!(align, 0.0);
+    }
+
+    #[test]
+    fn display_role_known() {
+        assert_eq!(display_role("ceo"), "CEO");
+        assert_eq!(display_role("cto"), "CTO");
+        assert_eq!(display_role("cfo"), "CFO");
+    }
+
+    #[test]
+    fn display_role_snake_case() {
+        assert_eq!(display_role("head_of_product"), "Head Of Product");
+        assert_eq!(display_role("tech_director"), "Tech Director");
     }
 }
