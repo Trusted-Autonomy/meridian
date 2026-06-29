@@ -5,3 +5,4 @@ pub mod report;
 pub mod serve;
 pub mod setup;
 pub mod suggest;
+pub mod summarize_title;

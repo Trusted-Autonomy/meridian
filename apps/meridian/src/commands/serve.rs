@@ -54,6 +54,12 @@ pub struct SuggestParams {
     threshold: Option<f32>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SummarizeTitleParams {
+    /// Raw prompt text to extract a work title from
+    text: String,
+}
+
 pub struct MeridianMcpServer {
     config_path: PathBuf,
     tool_router: ToolRouter<Self>,
@@ -346,6 +352,41 @@ impl MeridianMcpServer {
             serde_json::to_string_pretty(&output).unwrap_or_default(),
         ))
     }
+
+    #[tool(
+        description = "Extract a concise work title (≤8 words) from raw prompt text, stripping injected CLAUDE.md/plan context. Returns the derived title as plain text."
+    )]
+    fn meridian_summarize_title(
+        &self,
+        Parameters(params): Parameters<SummarizeTitleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let config = MeridianConfig::load_or_default(&self.config_path);
+        let api_key = config
+            .suggest
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok());
+        let use_claude_cli = api_key.is_none() && suggest_lib::claude_cli_available();
+
+        if api_key.is_none() && !use_claude_cli {
+            return Ok(text_result(
+                "Set ANTHROPIC_API_KEY or install the claude CLI to enable title summarization."
+                    .to_string(),
+            ));
+        }
+
+        let suggest_cfg = suggest_lib::SuggestConfig {
+            threshold: config.suggest.threshold,
+            sample_size: config.suggest.sample_size,
+            model: config.suggest.model.clone(),
+            api_key,
+            use_claude_cli,
+        };
+
+        suggest_lib::summarize_title(&suggest_cfg, &params.text)
+            .map(text_result)
+            .map_err(mcp_err)
+    }
 }
 
 #[tool_handler]
@@ -366,7 +407,8 @@ impl ServerHandler for MeridianMcpServer {
                  meridian_report: expert panel KPI alignment by session. \
                  meridian_analyze: categorized effort breakdown. \
                  meridian_kpis: list configured KPIs and metrics. \
-                 meridian_suggest: find low-alignment category×KPI pairs."
+                 meridian_suggest: find low-alignment category×KPI pairs. \
+                 meridian_summarize_title: extract concise work title from raw prompt text."
                     .into(),
             ),
         }

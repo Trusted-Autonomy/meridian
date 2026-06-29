@@ -6,7 +6,38 @@ Meridian answers: **Where is your team's AI effort going, and does it align with
 
 It classifies agent work by business category (code, PM, docs, sales, etc.), scores each category against your company KPIs, and — optionally — generates concrete suggestions for improving alignment.
 
+---
+
+**Available as:**
+- **MCP tool** — add to any Claude session with one command; your agent can query spend, analyze alignment, and get suggestions without leaving the conversation
+- **Trusted Autonomy integration** — built-in via `ta meridian`; every agent goal run is automatically tracked and available for KPI analysis
+- **Standalone CLI** — works with any JSONL usage log, TA project directory, or Claude Code projects folder
+
+---
+
 ## Quick start
+
+### As an MCP tool (Claude Code / Claude Desktop)
+
+```bash
+# Install
+cargo install --git https://github.com/Trusted-Autonomy/meridian
+
+# Add to Claude Code — runs meridian serve as a local MCP server
+claude mcp add meridian -- meridian serve
+```
+
+Your agent can now call these tools directly in any session:
+
+| Tool | What it does |
+|------|-------------|
+| `meridian_report` | Spend summary by category for a time window |
+| `meridian_analyze` | Full classification breakdown with KPI alignment scores |
+| `meridian_kpis` | Your configured KPIs with current alignment |
+| `meridian_suggest` | Low-scoring category×KPI pairs flagged for attention |
+| `meridian_summarize_title` | Extract a clean work title from raw prompt text |
+
+### Standalone CLI
 
 ```bash
 cargo install --git https://github.com/Trusted-Autonomy/meridian
@@ -107,6 +138,10 @@ meridian suggest                     # generate alignment suggestions (requires 
 meridian suggest --dry-run           # show which pairs would get suggestions, no API call
 meridian suggest --threshold 0.4    # custom threshold
 
+meridian summarize-title --text "..."  # extract a clean work title from raw prompt text
+echo "some prompt" | meridian summarize-title   # reads from stdin
+
+meridian serve                       # start MCP server (stdio transport)
 meridian init                        # create meridian.toml
 ```
 
@@ -175,6 +210,34 @@ Voyage AI embeds categories and KPIs once at startup, then classifies each recor
 
 Use keyword scoring to get started; switch to embeddings when you need higher fidelity or are classifying short/ambiguous titles like `"v0.17.0.10 - Generic Plugin System"`.
 
+## MCP server reference
+
+Meridian exposes its analytics as an MCP server compatible with Claude Code, Claude Desktop, and any MCP-capable agent framework.
+
+```bash
+# Register with Claude Code (stdio transport — managed by the MCP host)
+claude mcp add meridian -- meridian serve
+
+# With an explicit config path
+claude mcp add meridian -- meridian serve --config /path/to/meridian.toml
+```
+
+### Available tools
+
+| Tool | Parameters | Returns |
+|------|------------|---------|
+| `meridian_report` | `since` (default: 7d), `source`, `path` | Spend table + KPI scores by session |
+| `meridian_analyze` | `source`, `path` | Category breakdown with effort % and KPI alignment |
+| `meridian_kpis` | — | Configured KPIs with weights, descriptions, metrics |
+| `meridian_suggest` | `source`, `path`, `threshold` | Low-alignment pairs flagged for rebalancing |
+| `meridian_summarize_title` | `text` | Derived work title (≤8 words) stripped of injected context |
+
+### Publishing to MCP marketplaces
+
+- **Smithery** (`mcp.smithery.ai`): PR a `smithery.yaml` into `smithery-ai/registry`
+- **Anthropic MCP list**: PR into `modelcontextprotocol/servers`
+- **npm wrapper**: Publish `meridian` to npm with a platform-specific binary download for zero-install `npx meridian serve`
+
 ## TA integration
 
 Meridian reads Trusted Autonomy's `.ta/velocity-history.jsonl` directly — no changes to TA required.
@@ -185,9 +248,11 @@ meridian analyze
 
 # Or with explicit path:
 meridian analyze --source ta --path ~/development/TrustedAutonomy
-```
 
-Planned: `ta meridian` subcommand (TA v0.17.0.12) will wrap these commands so you never need to invoke `meridian` directly.
+# Via the ta CLI (v0.17.0.12+):
+ta meridian report
+ta meridian analyze
+```
 
 ## Architecture
 
