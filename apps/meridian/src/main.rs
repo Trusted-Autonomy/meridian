@@ -39,6 +39,8 @@ enum Cmd {
     Suggest(commands::suggest::SuggestArgs),
     /// Start an MCP server exposing Meridian analytics as tools
     Serve(commands::serve::ServeArgs),
+    /// Summarize raw prompt text into a concise work title (≤8 words)
+    SummarizeTitle(commands::summarize_title::SummarizeTitleArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,5 +53,6 @@ fn main() -> anyhow::Result<()> {
         Cmd::Setup(args) => commands::setup::run(args),
         Cmd::Suggest(args) => commands::suggest::run(args, &cli.config),
         Cmd::Serve(args) => commands::serve::run(args, &cli.config),
+        Cmd::SummarizeTitle(args) => commands::summarize_title::run(args, &cli.config),
     }
 }

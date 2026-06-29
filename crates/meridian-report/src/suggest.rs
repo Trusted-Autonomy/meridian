@@ -241,6 +241,150 @@ pub fn generate_suggestion(
     Ok(parse_suggestions(&text))
 }
 
+/// Heuristically strip context injected by TA/CLAUDE.md from a raw prompt.
+/// Keeps only likely user-authored content for title extraction.
+pub fn strip_injected_context(text: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut skip = false;
+    for line in text.lines() {
+        // Skip CLAUDE.md injection block
+        if line
+            .trim_start()
+            .starts_with("# Claude Code Project Instructions")
+        {
+            skip = true;
+        }
+        // Drop HTML comment lines (<!-- status: ... --> etc.)
+        if line.trim_start().starts_with("<!--") {
+            continue;
+        }
+        // Stop skipping on a non-heading non-empty line
+        if skip && !line.starts_with('#') && !line.trim().is_empty() {
+            skip = false;
+        }
+        if !skip {
+            lines.push(line);
+        }
+    }
+    let joined = lines.join("\n");
+    if joined.len() > 3000 {
+        joined[..3000].to_string()
+    } else {
+        joined
+    }
+}
+
+/// Extract a concise work title (≤8 words) from raw prompt text.
+/// Uses the claude CLI if available, otherwise the Anthropic HTTP API via `config`.
+pub fn summarize_title(config: &SuggestConfig, raw_text: &str) -> Result<String> {
+    let stripped = strip_injected_context(raw_text);
+    if stripped.trim().is_empty() {
+        anyhow::bail!("No content found after stripping injected context");
+    }
+
+    let prompt = format!(
+        "Extract the user's actual work request from the text below as a concise title \
+         (8 words max, no quotes, no punctuation at end).\n\
+         Respond with ONLY the title — no explanation, no preamble.\n\n\
+         Text:\n{text}",
+        text = stripped.trim()
+    );
+
+    let result = if config.use_claude_cli || (config.api_key.is_none() && claude_cli_available()) {
+        let mut child = std::process::Command::new("claude")
+            .arg("--print")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to start claude CLI: {e}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .map_err(|e| anyhow::anyhow!("Failed to write to claude CLI stdin: {e}"))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| anyhow::anyhow!("claude CLI wait failed: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "claude CLI exited with status {}: {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        let api_key = config.api_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Set ANTHROPIC_API_KEY or install the claude CLI to enable title summarization."
+            )
+        })?;
+
+        use serde::{Deserialize, Serialize};
+        #[derive(Serialize)]
+        struct Message {
+            role: String,
+            content: String,
+        }
+        #[derive(Serialize)]
+        struct Request {
+            model: String,
+            max_tokens: u32,
+            messages: Vec<Message>,
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            content: Vec<ContentBlock>,
+        }
+        #[derive(Deserialize)]
+        struct ContentBlock {
+            text: String,
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        let req = Request {
+            model: config.model.clone(),
+            max_tokens: 32,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+        };
+
+        let resp: Response = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&req)
+            .send()
+            .map_err(|e| anyhow::anyhow!("Anthropic API request failed: {e}"))?
+            .error_for_status()
+            .map_err(|e| anyhow::anyhow!("Anthropic API error: {e}"))?
+            .json()
+            .map_err(|e| anyhow::anyhow!("Anthropic API response parse error: {e}"))?;
+
+        resp.content
+            .into_iter()
+            .map(|c| c.text)
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string()
+    };
+
+    let words: Vec<&str> = result.split_whitespace().collect();
+    Ok(words.into_iter().take(8).collect::<Vec<_>>().join(" "))
+}
+
 /// Return (category_id, kpi_label, score) pairs below threshold, sorted by score ascending.
 pub fn find_low_alignment_pairs(
     summary: &[CategorySummary],
