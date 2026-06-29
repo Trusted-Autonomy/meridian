@@ -23,12 +23,16 @@ meridian analyze --source jsonl --path work.jsonl
 
 Meridian runs two independent scoring passes — the **bi-prism** — giving two orthogonal views of every record:
 
+What type of work is this?
 ```
                     +---------------------+
   work title -----> | Pass 1: Category    | --> "Code Implementation" (87% confidence)
                     | (what type?)        |
                     +---------------------+
+```
 
+Which KPIs does this work match with most closely?
+```
                     +---------------------+
   work title -----> | Pass 2: KPI Align   | --> engineering_velocity: 0.82
                     | (how aligned?)      |     revenue_growth: 0.11  <- suggest!
