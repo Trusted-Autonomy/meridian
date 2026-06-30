@@ -50,24 +50,6 @@ meridian analyze --source claude_code                  # Claude Code sessions (~
 meridian analyze --source jsonl --path work.jsonl      # your own work log
 ```
 
-### Standalone JSONL format
-
-Append one record per line. Meridian reads all records and filters by `--since` for time windows.
-
-```jsonl
-{"id": "task-001", "title": "Implement OAuth2 login flow", "tokens_input": 12000, "tokens_output": 4500, "timestamp": "2026-06-01T10:00:00Z"}
-{"id": "task-002", "title": "Write Q2 board deck", "seconds": 7200, "timestamp": "2026-06-02T14:00:00Z"}
-{"id": "task-003", "title": "Debug payment webhook failures", "tokens_input": 8000, "tokens_output": 2000}
-```
-
-- `title` is required. Everything else is optional.
-- Use `tokens_input`/`tokens_output` for LLM token usage or `seconds` for wall-clock time. `timestamp` is RFC3339; defaults to record-load time if absent.
-- Any LLM provider's usage log can be converted to this format with a small script.
-
-**The append-log pattern**: Keep a single growing file (`work.jsonl`) and append records as work happens. Use `--since 7d` or `--since 2026-06-01` to scope reports to a time window. To archive a period, rename the file (e.g. `work-2026-q2.jsonl`) and start a new one.
-
-> **Directory scanning** (planned): Meridian will support `jsonl = "logs/"` to scan a directory for `*.jsonl` files. Until then: `cat logs/*.jsonl | meridian analyze --source jsonl --path /dev/stdin`.
-
 ## Quick start (with Trusted Autonomy)
 
 If you use TA, Meridian reads `.ta/velocity-history.jsonl` directly — every completed goal run is a record automatically.
@@ -107,6 +89,44 @@ Which KPIs does this work match with most closely?
 The two passes are independent — category classification doesn't influence KPI alignment scores. This keeps the model honest and makes per-category KPI breakdowns meaningful.
 
 **Default scorer: keyword TF-IDF cosine** — zero API calls, works offline, no setup required. Upgrade to semantic embeddings (Voyage AI) for better accuracy on short or ambiguous titles.
+
+### What the output looks like
+
+```
+Meridian - Effort Analysis
+------------------------------------------------------------------------
+Category                 Records       Effort   % Total
+------------------------------------------------------------------------
+Code Implementation           42      145320     48.1%
+  KPI: engineering_velocity:82%  revenue_growth:14%
+Operations & Infrastructure   18       62400     20.7%
+  KPI: engineering_velocity:71%  revenue_growth:9%
+Documentation                 12       41200     13.6%
+  KPI: engineering_velocity:55%  revenue_growth:7%
+Project Management             8       28800      9.5%
+  KPI: engineering_velocity:43%  revenue_growth:31%
+Research & Exploration         5       24000      7.9%
+  KPI: engineering_velocity:38%  revenue_growth:22%
+------------------------------------------------------------------------
+Total: 85 records, 301720 effort points
+```
+
+```
+$ meridian suggest
+
+Low KPI Alignment (3 pairs below 25% threshold):
+  Code Implementation x Revenue Growth - 14%
+  Operations & Infrastructure x Revenue Growth - 9%
+  Documentation x Revenue Growth - 7%
+
+-- Code Implementation x Revenue Growth (14% alignment) --
+  1. Prioritize features that directly appear in customer-facing changelogs -- frame
+     implementation work around user value delivered, not internal refactoring.
+  2. When fixing bugs, link each fix to a customer-reported issue or NPS signal --
+     this surfaces the revenue-impact of reliability work.
+  3. Allocate ~20% of implementation cycles to API/integration surface improvements
+     that unblock sales engineering and partner integrations.
+```
 
 ---
 
@@ -245,6 +265,24 @@ ta_project_root = "/path/to/MyProject"
 
 Only one source is active at a time. If multiple are set, `ta_project_root` takes priority, then `jsonl`, then `claude_code`.
 
+### JSONL format
+
+Append one record per line. Meridian reads all records and filters by `--since` for time windows.
+
+```jsonl
+{"id": "task-001", "title": "Implement OAuth2 login flow", "tokens_input": 12000, "tokens_output": 4500, "timestamp": "2026-06-01T10:00:00Z"}
+{"id": "task-002", "title": "Write Q2 board deck", "seconds": 7200, "timestamp": "2026-06-02T14:00:00Z"}
+{"id": "task-003", "title": "Debug payment webhook failures", "tokens_input": 8000, "tokens_output": 2000}
+```
+
+- `title` is required. Everything else is optional.
+- Use `tokens_input`/`tokens_output` for LLM token usage or `seconds` for wall-clock time. `timestamp` is RFC3339; defaults to record-load time if absent.
+- Any LLM provider's usage log can be converted to this format with a small script.
+
+**The append-log pattern**: Keep a single growing file (`work.jsonl`) and append records as work happens. Use `--since 7d` or `--since 2026-06-01` to scope reports to a time window. To archive a period, rename the file (e.g. `work-2026-q2.jsonl`) and start a new one.
+
+> **Directory scanning** (planned): Meridian will support `jsonl = "logs/"` to scan a directory for `*.jsonl` files. Until then: `cat logs/*.jsonl | meridian analyze --source jsonl --path /dev/stdin`.
+
 ---
 
 ## Configuration reference
@@ -327,44 +365,6 @@ meridian init --preset agency        # agency KPIs + custom categories
 meridian init --preset game-studio   # game studio KPIs + gameplay/art/audio/engine categories
 meridian init --preset enterprise    # compliance, governance, risk KPIs
 meridian init --preset startup       # revenue, PMF, velocity, runway KPIs
-```
-
-## Sample output
-
-```
-Meridian - Effort Analysis
-------------------------------------------------------------------------
-Category                 Records       Effort   % Total
-------------------------------------------------------------------------
-Code Implementation           42      145320     48.1%
-  KPI: engineering_velocity:82%  revenue_growth:14%
-Operations & Infrastructure   18       62400     20.7%
-  KPI: engineering_velocity:71%  revenue_growth:9%
-Documentation                 12       41200     13.6%
-  KPI: engineering_velocity:55%  revenue_growth:7%
-Project Management             8       28800      9.5%
-  KPI: engineering_velocity:43%  revenue_growth:31%
-Research & Exploration         5       24000      7.9%
-  KPI: engineering_velocity:38%  revenue_growth:22%
-------------------------------------------------------------------------
-Total: 85 records, 301720 effort points
-```
-
-```
-$ meridian suggest
-
-Low KPI Alignment (3 pairs below 25% threshold):
-  Code Implementation x Revenue Growth - 14%
-  Operations & Infrastructure x Revenue Growth - 9%
-  Documentation x Revenue Growth - 7%
-
--- Code Implementation x Revenue Growth (14% alignment) --
-  1. Prioritize features that directly appear in customer-facing changelogs -- frame
-     implementation work around user value delivered, not internal refactoring.
-  2. When fixing bugs, link each fix to a customer-reported issue or NPS signal --
-     this surfaces the revenue-impact of reliability work.
-  3. Allocate ~20% of implementation cycles to API/integration surface improvements
-     that unblock sales engineering and partner integrations.
 ```
 
 ## Embedding backend upgrade
