@@ -6,24 +6,75 @@ Meridian answers: **Where is your team's AI effort going, and does it align with
 
 It classifies agent work by business category (code, PM, docs, sales, etc.), scores each category against your company KPIs, and — optionally — generates concrete suggestions for improving alignment.
 
+**No external services required.** The default keyword scorer runs offline with zero API calls. TA is optional.
+
 ---
 
 **Available as:**
+- **Standalone CLI** — works with any JSONL work log, Claude Code session history, or any LLM usage export
 - **MCP tool** — add to any Claude session with one command; your agent can query spend, analyze alignment, and get suggestions without leaving the conversation
 - **Trusted Autonomy integration** — built-in via `ta meridian`; every agent goal run is automatically tracked and available for KPI analysis
-- **Standalone CLI** — works with any JSONL usage log, TA project directory, or Claude Code projects folder
 
 ---
 
-## Quick start
+## Quick start (standalone)
 
-### As an MCP tool (Claude Code / Claude Desktop)
+No TA required. Point Meridian at any JSONL work log.
 
 ```bash
 # Install
 cargo install --git https://github.com/Trusted-Autonomy/meridian
 
-# Add to Claude Code — runs meridian serve as a local MCP server
+# Create a config with example KPIs
+meridian init          # writes meridian.toml in the current directory
+
+# Analyze your work log
+meridian analyze --source jsonl --path work.jsonl
+
+# Or analyze Claude Code session history (auto-detected from ~/.claude/projects)
+meridian analyze --source claude_code
+```
+
+### Standalone JSONL format
+
+Append one record per line. Meridian reads all records and filters by `--since` for time windows.
+
+```jsonl
+{"id": "task-001", "title": "Implement OAuth2 login flow", "tokens_input": 12000, "tokens_output": 4500, "timestamp": "2026-06-01T10:00:00Z"}
+{"id": "task-002", "title": "Write Q2 board deck", "seconds": 7200, "timestamp": "2026-06-02T14:00:00Z"}
+{"id": "task-003", "title": "Debug payment webhook failures", "tokens_input": 8000, "tokens_output": 2000}
+```
+
+- `title` is required. Everything else is optional.
+- Use `tokens_input`/`tokens_output` if your source tracks LLM token usage. Use `seconds` for wall-clock time. `timestamp` is RFC3339; defaults to record-load time if absent.
+- Any LLM provider's usage log can be transformed into this format with a small script.
+
+**The append-log pattern**: Keep a single growing file (`work.jsonl`) and append records as work happens. Use `--since 7d` or `--since 2026-06-01` to scope reports to a time window. To archive a period, rename the file (e.g. `work-2026-q2.jsonl`) and start a new one — pass `--path` to analyze a specific archive. There is no built-in rotation; the log file is just text.
+
+> **Directory scanning** (planned): Meridian will support `jsonl = "logs/"` to scan a directory tree for `*.jsonl` files, loading and merging them all in timestamp order. Until then, pass `--path` explicitly or concatenate files: `cat logs/*.jsonl | meridian analyze --source jsonl --path /dev/stdin`.
+
+## Quick start (with Trusted Autonomy)
+
+If you use TA, Meridian reads `.ta/velocity-history.jsonl` directly — every completed goal run is already a record.
+
+```bash
+# From any TA project root (auto-detected):
+meridian analyze
+
+# Or with an explicit path:
+meridian analyze --source ta --path ~/development/MyProject
+
+# Via the ta CLI (v0.17.0.12+):
+ta meridian analyze
+ta meridian suggest
+```
+
+TA integration gives you structured phase data, goal titles, and wall-clock durations without any log management on your part.
+
+## Quick start (as an MCP tool)
+
+```bash
+# Add to Claude Code
 claude mcp add meridian -- meridian serve
 ```
 
@@ -36,19 +87,6 @@ Your agent can now call these tools directly in any session:
 | `meridian_kpis` | Your configured KPIs with current alignment |
 | `meridian_suggest` | Low-scoring category×KPI pairs flagged for attention |
 | `meridian_summarize_title` | Extract a clean work title from raw prompt text |
-
-### Standalone CLI
-
-```bash
-cargo install --git https://github.com/Trusted-Autonomy/meridian
-
-# From a TA project directory (auto-detected):
-meridian analyze
-
-# Standalone — any work log in JSONL format:
-meridian init                                     # creates meridian.toml with example KPIs
-meridian analyze --source jsonl --path work.jsonl
-```
 
 ## How it works: bi-prism analysis
 
@@ -74,24 +112,122 @@ The two passes are independent — category classification doesn't influence KPI
 
 **Default scorer: keyword TF-IDF cosine** — zero API calls, works offline, no setup required. Upgrade to semantic embeddings (Voyage AI) for better accuracy on short or ambiguous titles.
 
-## Data sources
+---
 
-| Source | What it reads | Effort unit |
-|--------|--------------|-------------|
-| `--source ta` | `.ta/velocity-history.jsonl` | seconds (wall clock) |
-| `--source jsonl` | Any JSONL with `{title, id?, tokens_input?, tokens_output?, seconds?}` | tokens or seconds |
+## Defining your taxonomy
 
-### Standalone JSONL format
+Meridian's classification is driven by two things you control: **categories** (what type of work) and **KPIs** (what your business cares about).
 
-```jsonl
-{"id": "task-001", "title": "Implement OAuth2 login flow", "tokens_input": 12000, "tokens_output": 4500, "timestamp": "2026-06-01T10:00:00Z"}
-{"id": "task-002", "title": "Write Q2 board deck", "seconds": 7200, "timestamp": "2026-06-02T14:00:00Z"}
-{"id": "task-003", "title": "Debug payment webhook failures", "tokens_input": 8000, "tokens_output": 2000}
+### KPIs
+
+KPIs are the business outcomes you want to track. Define them in `meridian.toml`. The `description` is the most important field — it's what the scorer matches work titles against.
+
+```toml
+[[kpis]]
+id = "engineering_velocity"
+label = "Engineering Velocity"
+description = "Activities that improve team ability to ship quality software faster — code, tests, CI/CD, refactoring, architecture"
+weight = 1.0
+
+[[kpis]]
+id = "revenue_growth"
+label = "Revenue Growth"
+description = "Activities that directly drive or support revenue — sales, marketing, customer acquisition, product features that users pay for"
+weight = 1.0
+
+[[kpis]]
+id = "risk_reduction"
+label = "Risk Reduction"
+description = "Activities that reduce security, compliance, operational, or business risk — audits, hardening, documentation, backup systems"
+weight = 0.8
 ```
 
-Any LLM provider's usage log can be transformed into this format with a simple script. Fields `tokens_input`/`tokens_output` and `seconds` are alternatives — use whichever your source provides.
+**Tips for effective KPI descriptions**:
+- Be specific about what counts. "Activities that improve team ability to ship quality software faster" scores code, tests, and CI/CD work well.
+- The scorer compares each work title to each KPI description. Longer, more specific descriptions produce more accurate scores.
+- Use `weight` (0.0–1.0) to express relative importance if KPIs aren't equally valued.
+- There's no fixed list — define what your company actually measures. OKRs, board metrics, and department goals all work.
 
-## Configuration
+### Categories (the taxonomy)
+
+Categories classify the *type* of work, independent of business value. Meridian ships with 10 built-in categories covering most teams:
+
+| ID | Label | What it covers |
+|----|-------|---------------|
+| `code` | Code Implementation | Writing, debugging, refactoring, testing, reviewing code |
+| `pm` | Project Management | Planning, roadmaps, sprints, tracking, retrospectives |
+| `docs` | Documentation | Usage guides, READMEs, changelogs, internal docs |
+| `security` | Security & Compliance | Reviews, hardening, audit, access control |
+| `ops` | Operations & Infrastructure | Deployment, CI/CD, monitoring, devops |
+| `finance` | Finance & Reporting | Budget analysis, cost tracking, financial modeling |
+| `sales` | Sales & Business Development | Proposals, CRM, outreach, business development |
+| `marketing` | Marketing & Content | Content, campaigns, brand, social |
+| `product` | Product Management | Discovery, user research, requirements, UX decisions |
+| `research` | Research & Exploration | Technical research, prototyping, POCs, investigation |
+
+Each category has **subcategories** (L2) for finer-grained breakdown — for example, `code` breaks into: Core Feature Development, Data Modeling, Integration & Connectors, UI / Frontend, Testing & QA, Performance & Reliability, and Refactoring & Tech Debt.
+
+**Most teams use the built-in categories.** The descriptions and keywords are tuned for software teams and general business work.
+
+**To customize categories** — add `[[categories]]` blocks in `meridian.toml`. This *replaces* the full built-in set, so include all the categories you want:
+
+```toml
+# Custom taxonomy for a game studio — replaces the built-in set
+[[categories]]
+id = "gameplay"
+label = "Gameplay & Mechanics"
+description = "Game mechanics, player systems, physics, AI behavior, level design logic"
+keywords = ["gameplay", "mechanic", "physics", "player", "level", "ai", "behavior"]
+
+[[categories]]
+id = "engine"
+label = "Engine & Tools"
+description = "Rendering, engine subsystems, editor tooling, build pipeline, performance"
+keywords = ["engine", "renderer", "shader", "pipeline", "editor", "tool", "optimization"]
+
+[[categories]]
+id = "art_pipeline"
+label = "Art Pipeline"
+description = "Asset import, rig, animation, material authoring, texture, VFX"
+keywords = ["art", "asset", "animation", "rig", "texture", "material", "vfx"]
+```
+
+**`domain_label` (subcategory override)**: Built-in subcategories have a `domain_label` field that lets you rename them for your vertical without rebuilding the keyword set. This is set in code (`taxonomy.rs`) for now; config-level overrides are planned.
+
+---
+
+## Data sources
+
+| Source key | What it reads | Effort unit |
+|-----------|--------------|-------------|
+| `ta` | `.ta/velocity-history.jsonl` in a TA project | seconds (wall clock) |
+| `jsonl` | Any JSONL file you provide | tokens or seconds |
+| `claude_code` | `~/.claude/projects/` session transcripts | tokens |
+
+### In `meridian.toml`
+
+```toml
+[source]
+# --- Pick one ---
+
+# TA project: reads .ta/velocity-history.jsonl
+# Auto-detected when running from a TA project directory.
+ta_project_root = "/path/to/MyProject"
+
+# Standalone JSONL: your own append-log of work records.
+# Append one JSON object per line as work happens; use --since to scope reports.
+# jsonl = "work.jsonl"
+
+# Claude Code sessions: reads ~/.claude/projects/ for session history.
+# Useful on any machine running Claude Code, no TA required.
+# claude_code_dir = "~/.claude/projects"   # default path; omit to use default
+```
+
+Only one source is active at a time. If multiple are set, `ta_project_root` takes priority, then `jsonl`, then `claude_code`.
+
+---
+
+## Configuration reference
 
 ```bash
 meridian init    # creates meridian.toml in current directory
@@ -101,11 +237,15 @@ meridian init    # creates meridian.toml in current directory
 # meridian.toml
 
 [source]
-ta_project_root = "/path/to/TrustedAutonomy"   # or auto-detected from cwd
-# jsonl = "my-usage.jsonl"                     # standalone
+# ta_project_root = "/path/to/TrustedAutonomy"   # or auto-detected from cwd
+# jsonl = "work.jsonl"                           # standalone append-log
+# claude_code_dir = "~/.claude/projects"         # Claude Code session history
 
 [report]
 format = "table"    # table | json | csv
+
+# --- Define your KPIs ---
+# Descriptions drive scoring accuracy. Be specific about what counts.
 
 [[kpis]]
 id = "engineering_velocity"
@@ -119,31 +259,46 @@ label = "Revenue Growth"
 description = "Activities that drive or support revenue — sales, features, marketing"
 weight = 1.0
 
-# Optional: semantic embedding backend (improves accuracy on short titles)
+# --- Custom categories (optional) ---
+# Omit this section to use the 10 built-in categories (recommended for most teams).
+# If you add any [[categories]] block, it replaces the full built-in set.
+#
+# [[categories]]
+# id = "gameplay"
+# label = "Gameplay & Mechanics"
+# description = "Game mechanics, player systems, physics, AI, level design"
+# keywords = ["gameplay", "mechanic", "physics", "player", "level"]
+
+# --- Embedding backend (optional, improves accuracy on short/ambiguous titles) ---
+# Default "keyword" scorer works offline with zero API calls.
 # [embedding]
 # backend = "voyage"     # requires VOYAGE_API_KEY
 # model = "voyage-3-lite"
 
-# Optional: regression suggestions via Claude
+# --- Regression suggestions (optional, requires ANTHROPIC_API_KEY) ---
 # [suggest]
 # threshold = 0.25       # categories below 25% alignment get suggestions
 # model = "claude-haiku-4-5-20251001"
-# # Reads ANTHROPIC_API_KEY from env
 ```
+
+---
 
 ## Commands
 
 ```bash
 meridian analyze                     # classify + report (auto-detects source)
+meridian analyze --source jsonl --path work.jsonl
+meridian analyze --since 7d          # last 7 days only
+meridian analyze --since 2026-06-01  # since a specific date
 meridian analyze --format json       # JSON output
 meridian analyze --format csv        # CSV output
 
 meridian suggest                     # generate alignment suggestions (requires ANTHROPIC_API_KEY)
 meridian suggest --dry-run           # show which pairs would get suggestions, no API call
-meridian suggest --threshold 0.4    # custom threshold
+meridian suggest --threshold 0.4     # custom threshold
 
 meridian summarize-title --text "..."  # extract a clean work title from raw prompt text
-echo "some prompt" | meridian summarize-title   # reads from stdin
+echo "some prompt" | meridian summarize-title
 
 meridian serve                       # start MCP server (stdio transport)
 meridian init                        # create meridian.toml
@@ -262,10 +417,10 @@ ta meridian analyze
 
 ```
 meridian-core      — UsageRecord, Taxonomy, KeywordScorer, EmbeddingScorer, Embedder trait
-meridian-ingest    — TA adapter (velocity-history.jsonl), generic JSONL, Anthropic CSV stub
+meridian-ingest    — TA adapter (velocity-history.jsonl), generic JSONL, Claude Code sessions
 meridian-report    — table/JSON/CSV output, regression suggestion engine
 meridian-config    — meridian.toml loader
-apps/meridian      — CLI binary (analyze, suggest, init)
+apps/meridian      — CLI binary (analyze, suggest, init, serve)
 ```
 
 ## License
