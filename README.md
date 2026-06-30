@@ -11,28 +11,43 @@ It classifies agent work by business category (code, PM, docs, sales, etc.), sco
 ---
 
 **Available as:**
-- **Standalone CLI** — works with any JSONL work log, Claude Code session history, or any LLM usage export
 - **MCP tool** — add to any Claude session with one command; your agent can query spend, analyze alignment, and get suggestions without leaving the conversation
+- **Standalone CLI** — works with any JSONL work log, Claude Code session history, or any LLM usage export
 - **Trusted Autonomy integration** — built-in via `ta meridian`; every agent goal run is automatically tracked and available for KPI analysis
 
 ---
 
-## Quick start (standalone)
+## Quick start (MCP tool)
 
-No TA required. Point Meridian at any JSONL work log.
+The fastest way to get Meridian working — add it to any Claude Code or Claude Desktop session.
 
 ```bash
 # Install
 cargo install --git https://github.com/Trusted-Autonomy/meridian
 
-# Create a config with example KPIs
-meridian init          # writes meridian.toml in the current directory
+# Add to Claude Code (runs meridian serve as a local MCP server)
+claude mcp add meridian -- meridian serve
+```
 
-# Analyze your work log
-meridian analyze --source jsonl --path work.jsonl
+Your agent can now call these tools directly in any session:
 
-# Or analyze Claude Code session history (auto-detected from ~/.claude/projects)
-meridian analyze --source claude_code
+| Tool | What it does |
+|------|-------------|
+| `meridian_report` | Spend summary by category for a time window |
+| `meridian_analyze` | Full classification breakdown with KPI alignment scores |
+| `meridian_kpis` | Your configured KPIs with current alignment |
+| `meridian_suggest` | Low-scoring category×KPI pairs flagged for attention |
+| `meridian_summarize_title` | Extract a clean work title from raw prompt text |
+
+## Quick start (standalone CLI)
+
+No MCP, no TA required. Point Meridian at any JSONL work log or Claude Code session history.
+
+```bash
+# Create a config for your business type, then analyze
+meridian init --preset software    # or: saas, agency, game-studio, enterprise, startup
+meridian analyze --source claude_code                  # Claude Code sessions (~/.claude/projects)
+meridian analyze --source jsonl --path work.jsonl      # your own work log
 ```
 
 ### Standalone JSONL format
@@ -46,16 +61,16 @@ Append one record per line. Meridian reads all records and filters by `--since` 
 ```
 
 - `title` is required. Everything else is optional.
-- Use `tokens_input`/`tokens_output` if your source tracks LLM token usage. Use `seconds` for wall-clock time. `timestamp` is RFC3339; defaults to record-load time if absent.
-- Any LLM provider's usage log can be transformed into this format with a small script.
+- Use `tokens_input`/`tokens_output` for LLM token usage or `seconds` for wall-clock time. `timestamp` is RFC3339; defaults to record-load time if absent.
+- Any LLM provider's usage log can be converted to this format with a small script.
 
-**The append-log pattern**: Keep a single growing file (`work.jsonl`) and append records as work happens. Use `--since 7d` or `--since 2026-06-01` to scope reports to a time window. To archive a period, rename the file (e.g. `work-2026-q2.jsonl`) and start a new one — pass `--path` to analyze a specific archive. There is no built-in rotation; the log file is just text.
+**The append-log pattern**: Keep a single growing file (`work.jsonl`) and append records as work happens. Use `--since 7d` or `--since 2026-06-01` to scope reports to a time window. To archive a period, rename the file (e.g. `work-2026-q2.jsonl`) and start a new one.
 
-> **Directory scanning** (planned): Meridian will support `jsonl = "logs/"` to scan a directory tree for `*.jsonl` files, loading and merging them all in timestamp order. Until then, pass `--path` explicitly or concatenate files: `cat logs/*.jsonl | meridian analyze --source jsonl --path /dev/stdin`.
+> **Directory scanning** (planned): Meridian will support `jsonl = "logs/"` to scan a directory for `*.jsonl` files. Until then: `cat logs/*.jsonl | meridian analyze --source jsonl --path /dev/stdin`.
 
 ## Quick start (with Trusted Autonomy)
 
-If you use TA, Meridian reads `.ta/velocity-history.jsonl` directly — every completed goal run is already a record.
+If you use TA, Meridian reads `.ta/velocity-history.jsonl` directly — every completed goal run is a record automatically.
 
 ```bash
 # From any TA project root (auto-detected):
@@ -68,25 +83,6 @@ meridian analyze --source ta --path ~/development/MyProject
 ta meridian analyze
 ta meridian suggest
 ```
-
-TA integration gives you structured phase data, goal titles, and wall-clock durations without any log management on your part.
-
-## Quick start (as an MCP tool)
-
-```bash
-# Add to Claude Code
-claude mcp add meridian -- meridian serve
-```
-
-Your agent can now call these tools directly in any session:
-
-| Tool | What it does |
-|------|-------------|
-| `meridian_report` | Spend summary by category for a time window |
-| `meridian_analyze` | Full classification breakdown with KPI alignment scores |
-| `meridian_kpis` | Your configured KPIs with current alignment |
-| `meridian_suggest` | Low-scoring category×KPI pairs flagged for attention |
-| `meridian_summarize_title` | Extract a clean work title from raw prompt text |
 
 ## How it works: bi-prism analysis
 
@@ -193,6 +189,30 @@ keywords = ["art", "asset", "animation", "rig", "texture", "material", "vfx"]
 ```
 
 **`domain_label` (subcategory override)**: Built-in subcategories have a `domain_label` field that lets you rename them for your vertical without rebuilding the keyword set. This is set in code (`taxonomy.rs`) for now; config-level overrides are planned.
+
+### Business type presets
+
+`meridian init --preset <type>` writes a ready-to-use `meridian.toml` tuned for your context. Pick the one closest to your team, then edit KPI descriptions to match your actual priorities.
+
+```bash
+meridian init --preset software      # default — engineering team, general software product
+meridian init --preset saas          # SaaS product company (ARR, churn, product velocity)
+meridian init --preset agency        # agency / service business (client delivery, creative quality)
+meridian init --preset game-studio   # game development (player experience, art, audio, engine)
+meridian init --preset enterprise    # large org (compliance, governance, risk, operational efficiency)
+meridian init --preset startup       # early-stage (revenue, PMF, velocity, runway)
+```
+
+| Preset | KPIs | Categories |
+|--------|------|-----------|
+| `software` | Engineering Velocity, Revenue Growth, Risk Reduction, Customer Satisfaction | Built-in (code, pm, docs, security, ops…) |
+| `saas` | Product Velocity, ARR Growth, Churn Reduction, Technical Health | Built-in |
+| `agency` | Client Delivery, Revenue Growth, Creative Quality, Operational Efficiency | Custom: Client Work, Creative, Biz Dev, PM, Ops |
+| `game-studio` | Player Experience, Feature Completion, Technical Performance, Revenue | Custom: Gameplay, Art, Audio, Engine, Production, Live Ops |
+| `enterprise` | Compliance, Operational Efficiency, Risk Reduction, Stakeholder Value | Built-in |
+| `startup` | Revenue Growth, Product-Market Fit, Engineering Velocity, Runway Extension | Built-in |
+
+All presets include commented `[source]` stubs so you can switch between TA, JSONL, and Claude Code data with a single uncomment.
 
 ---
 
@@ -301,7 +321,12 @@ meridian summarize-title --text "..."  # extract a clean work title from raw pro
 echo "some prompt" | meridian summarize-title
 
 meridian serve                       # start MCP server (stdio transport)
-meridian init                        # create meridian.toml
+meridian init                        # create meridian.toml (default: --preset software)
+meridian init --preset saas          # SaaS KPIs (ARR growth, churn, product velocity)
+meridian init --preset agency        # agency KPIs + custom categories
+meridian init --preset game-studio   # game studio KPIs + gameplay/art/audio/engine categories
+meridian init --preset enterprise    # compliance, governance, risk KPIs
+meridian init --preset startup       # revenue, PMF, velocity, runway KPIs
 ```
 
 ## Sample output
