@@ -56,3 +56,15 @@ weight = 0.9
 # threshold = 0.25           # 0-1.0; categories below this get suggestions
 # sample_size = 5            # titles to include as context
 # model = "claude-haiku-4-5-20251001"
+
+# --- Per-entry KPI alignment tiers (used by `meridian report`) ----------------
+# Every record's *best* KPI-fit score (the highest of its per-KPI scores) is
+# bucketed into High / Moderate / Low. `meridian report` always shows a tier
+# summary (count, effort, credits, avg score per tier); add --detail, --tier,
+# or --min-score/--max-score to see the individual records within a tier or
+# score range — e.g. `meridian report --tier low` or
+# `meridian report --min-score 0.25 --max-score 0.35 --detail 20`.
+#
+# [alignment]
+# low_threshold = 0.25   # best-KPI-fit scores below this are tier "Low"
+# high_threshold = 0.6   # scores at or above this are tier "High" (between: "Moderate")

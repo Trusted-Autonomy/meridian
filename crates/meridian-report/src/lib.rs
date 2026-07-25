@@ -1,3 +1,4 @@
+pub mod alignment;
 pub mod auth;
 pub mod export;
 pub mod panel;

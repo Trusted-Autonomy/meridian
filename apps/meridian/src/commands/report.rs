@@ -7,11 +7,17 @@ use meridian_core::result::KpiScore;
 use meridian_core::scorer::KeywordScorer;
 use meridian_core::taxonomy::Kpi;
 use meridian_ingest::{claude_code, generic, ta::TaSource};
+use meridian_report::alignment::{
+    filter_entries, scored_entries, summarise_alignment, AlignmentSummary, ScoreFilter,
+    ScoredEntry, Tier,
+};
 use meridian_report::panel::{PanelResult, PanelScorer};
 use serde_json;
 use std::path::{Path, PathBuf};
 
 const DISSENT_THRESHOLD: f32 = 0.20;
+/// Sentinel for `--detail` passed bare (no number) — "show all matching records".
+const DETAIL_ALL: usize = usize::MAX;
 
 #[derive(Args)]
 pub struct ReportArgs {
@@ -30,6 +36,23 @@ pub struct ReportArgs {
     /// Path to data file or TA project root (overrides config)
     #[arg(long)]
     pub path: Option<PathBuf>,
+
+    /// Show individual KPI-alignment records. Bare = all; with a number = top N
+    /// by score, ascending (worst-first). Implied by --tier/--min-score/--max-score.
+    #[arg(long, num_args = 0..=1, default_missing_value = "18446744073709551615")]
+    pub detail: Option<usize>,
+
+    /// Restrict the detail listing to one tier: high, moderate, low.
+    #[arg(long, conflicts_with_all = ["min_score", "max_score"])]
+    pub tier: Option<String>,
+
+    /// Restrict the detail listing to entries scoring at or above this value (0.0-1.0).
+    #[arg(long)]
+    pub min_score: Option<f32>,
+
+    /// Restrict the detail listing to entries scoring at or below this value (0.0-1.0).
+    #[arg(long)]
+    pub max_score: Option<f32>,
 }
 
 pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
@@ -161,23 +184,66 @@ pub fn run(args: ReportArgs, config_path: &Path) -> Result<()> {
         Some(KeywordScorer::new(&taxonomy.categories, &taxonomy.kpis))
     };
 
+    // Resolve the --tier/--min-score/--max-score filter, if any. clap's
+    // conflicts_with_all already rejects --tier combined with either score
+    // bound, so only an invalid --tier *name* needs checking here.
+    let filter = if let Some(tier_str) = &args.tier {
+        let tier = Tier::parse(tier_str).ok_or_else(|| {
+            anyhow::anyhow!("Unknown tier '{tier_str}'. Valid: high, moderate, low")
+        })?;
+        Some(ScoreFilter::Tier(tier))
+    } else if args.min_score.is_some() || args.max_score.is_some() {
+        Some(ScoreFilter::Range {
+            min: args.min_score,
+            max: args.max_score,
+        })
+    } else {
+        None
+    };
+    let show_detail = args.detail.is_some() || filter.is_some();
+    let detail_limit = args.detail.filter(|&n| n != DETAIL_ALL);
+
+    let (alignment_summary, detail_entries): (Option<AlignmentSummary>, Option<Vec<ScoredEntry>>) =
+        if let Some(ks) = &kpi_scorer {
+            let classified = ks.classify_batch(&records);
+            let summary = summarise_alignment(&classified, &config.alignment);
+            let detail = if show_detail {
+                Some(filter_entries(
+                    scored_entries(&classified, &config.alignment),
+                    filter.as_ref(),
+                    detail_limit,
+                ))
+            } else {
+                None
+            };
+            (Some(summary), detail)
+        } else {
+            (None, None)
+        };
+
     let format = args.format.as_deref().unwrap_or(&config.report.format);
     match format {
-        "json" => print_json(&results),
-        "csv" => print_csv(
-            &results,
-            &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
-            &kpi_scorer,
-            &taxonomy.kpis,
-        ),
-        _ => print_table(
-            &results,
-            &since,
-            &args.since,
-            &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
-            &kpi_scorer,
-            &taxonomy.kpis,
-        ),
+        "json" => print_json(&results, &alignment_summary, &detail_entries),
+        "csv" => {
+            print_csv(
+                &results,
+                &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
+                &kpi_scorer,
+                &taxonomy.kpis,
+            );
+            print_alignment_csv(&alignment_summary, &detail_entries);
+        }
+        _ => {
+            print_table(
+                &results,
+                &since,
+                &args.since,
+                &panel.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
+                &kpi_scorer,
+                &taxonomy.kpis,
+            );
+            print_alignment_table(&alignment_summary, &detail_entries);
+        }
     }
 
     Ok(())
@@ -256,11 +322,115 @@ fn kpi_short_label<'a>(kpi_id: &'a str, kpis: &'a [Kpi]) -> &'a str {
         .unwrap_or(kpi_id)
 }
 
-fn print_json(results: &[PanelResult]) {
+fn print_json(
+    results: &[PanelResult],
+    alignment_summary: &Option<AlignmentSummary>,
+    detail_entries: &Option<Vec<ScoredEntry>>,
+) {
+    let output = serde_json::json!({
+        "sessions": results,
+        "alignment": alignment_summary,
+        "alignment_detail": detail_entries,
+    });
     println!(
         "{}",
-        serde_json::to_string_pretty(results).unwrap_or_default()
+        serde_json::to_string_pretty(&output).unwrap_or_default()
     );
+}
+
+fn print_alignment_csv(
+    alignment_summary: &Option<AlignmentSummary>,
+    detail_entries: &Option<Vec<ScoredEntry>>,
+) {
+    let Some(summary) = alignment_summary else {
+        return;
+    };
+    println!();
+    println!("tier,record_count,total_effort,total_credits,avg_score");
+    for t in &summary.tiers {
+        println!(
+            "{},{},{},{},{:.3}",
+            t.tier.label(),
+            t.record_count,
+            t.total_effort,
+            t.total_credits.map(|c| format!("{c}")).unwrap_or_default(),
+            t.avg_score
+        );
+    }
+
+    if let Some(entries) = detail_entries {
+        println!();
+        println!("id,title,best_kpi_id,score,tier,prompt,objective");
+        for e in entries {
+            println!(
+                "{},{},{},{:.3},{},{},{}",
+                e.id,
+                e.title.replace(',', ";"),
+                e.best_kpi_id.clone().unwrap_or_default(),
+                e.score,
+                e.tier.label(),
+                e.prompt.clone().unwrap_or_default().replace(',', ";"),
+                e.objective.clone().unwrap_or_default().replace(',', ";"),
+            );
+        }
+    }
+}
+
+fn print_alignment_table(
+    alignment_summary: &Option<AlignmentSummary>,
+    detail_entries: &Option<Vec<ScoredEntry>>,
+) {
+    let Some(summary) = alignment_summary else {
+        return;
+    };
+    println!();
+    println!(" KPI ALIGNMENT TIERS");
+    println!(
+        " {:<10}  {:>7}  {:>10}  {:>9}  {:>9}",
+        "Tier", "Count", "Effort", "Credits", "Avg Score"
+    );
+    println!(" {}", "\u{2500}".repeat(52));
+    for t in &summary.tiers {
+        let credits_str = t
+            .total_credits
+            .map(|c| format!("{c:.1}"))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            " {:<10}  {:>7}  {:>10}  {:>9}  {:>9.2}",
+            t.tier.label(),
+            t.record_count,
+            format_effort(&EffortUnits::Seconds(t.total_effort as u64)),
+            credits_str,
+            t.avg_score
+        );
+    }
+
+    if let Some(entries) = detail_entries {
+        println!();
+        if entries.is_empty() {
+            println!(" No matching records.");
+        } else {
+            println!(" Matching records: {}", entries.len());
+            println!(" {}", "\u{2500}".repeat(52));
+            for e in entries {
+                let title_trunc: String = e.title.chars().take(60).collect();
+                println!(
+                    " [{:.2}] \"{}\" — best fit: {}",
+                    e.score,
+                    title_trunc,
+                    e.best_kpi_id.as_deref().unwrap_or("none")
+                );
+                if let Some(objective) = &e.objective {
+                    println!("      objective: {objective}");
+                }
+                if let Some(prompt) = &e.prompt {
+                    let prompt_trunc: String = prompt.chars().take(120).collect();
+                    println!("      prompt: {prompt_trunc}");
+                }
+            }
+        }
+    }
+    println!();
 }
 
 fn print_csv(
@@ -550,6 +720,9 @@ mod tests {
             source: "test".into(),
             phase: None,
             metadata: Default::default(),
+            prompt: None,
+            objective: None,
+            credits_consumed: None,
         };
         let old = UsageRecord {
             id: "r2".into(),
@@ -559,6 +732,9 @@ mod tests {
             source: "test".into(),
             phase: None,
             metadata: Default::default(),
+            prompt: None,
+            objective: None,
+            credits_consumed: None,
         };
 
         let since = parse_since("7d").unwrap();

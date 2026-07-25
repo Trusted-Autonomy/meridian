@@ -9,4 +9,5 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 meridian-core = { path = "../meridian-core" }
+meridian-config = { path = "../meridian-config" }
 reqwest = { workspace = true }

@@ -182,6 +182,9 @@ pub fn load_session(session_file: &Path, project_path: &str) -> Result<Option<Us
         source: "claude-code".to_string(),
         phase: None,
         metadata,
+        prompt: None,
+        objective: None,
+        credits_consumed: None,
     }))
 }
 
