@@ -35,4 +35,15 @@ pub struct UsageRecord {
     /// Optional plan phase tag (e.g. "0.17.0.10" from TA).
     pub phase: Option<String>,
     pub metadata: HashMap<String, String>,
+    /// Fuller task description, if the source has one. Meridian is source-agnostic —
+    /// this is optional context a source may supply, not a TA-specific concept.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Stated goal/intent, if the source has one.
+    #[serde(default)]
+    pub objective: Option<String>,
+    /// Generic cost unit; the source defines what a "credit" means (tokens, dollars,
+    /// compute-seconds, etc). Meridian only aggregates and displays it.
+    #[serde(default)]
+    pub credits_consumed: Option<f64>,
 }

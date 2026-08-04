@@ -122,6 +122,9 @@ mod tests {
             source: "test".into(),
             phase: None,
             metadata: Default::default(),
+            prompt: None,
+            objective: None,
+            credits_consumed: None,
         }
     }
 

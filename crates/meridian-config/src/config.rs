@@ -24,6 +24,37 @@ pub struct MeridianConfig {
     /// Expert panel for `meridian report`. Falls back to built-in 4-role panel when empty.
     #[serde(default)]
     pub panel: Vec<PanelMember>,
+    /// Per-entry KPI alignment tier thresholds, used by `meridian report`'s
+    /// tier summary and `--detail`/`--tier`/`--min-score`/`--max-score` filters.
+    #[serde(default)]
+    pub alignment: AlignmentConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AlignmentConfig {
+    /// Entries scoring below this (best KPI fit) are tier "Low".
+    #[serde(default = "default_low_threshold")]
+    pub low_threshold: f32,
+    /// Entries scoring at or above this (best KPI fit) are tier "High".
+    /// Between low_threshold and high_threshold is "Moderate".
+    #[serde(default = "default_high_threshold")]
+    pub high_threshold: f32,
+}
+
+fn default_low_threshold() -> f32 {
+    0.25
+}
+fn default_high_threshold() -> f32 {
+    0.6
+}
+
+impl Default for AlignmentConfig {
+    fn default() -> Self {
+        Self {
+            low_threshold: default_low_threshold(),
+            high_threshold: default_high_threshold(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

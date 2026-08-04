@@ -328,7 +328,9 @@ pub fn run(args: InitArgs) -> Result<()> {
     println!();
     println!("Next steps:");
     println!("  1. Edit meridian.toml — tune KPI descriptions and weights for your team");
-    println!("  2. meridian analyze                                    # TA project (auto-detected)");
+    println!(
+        "  2. meridian analyze                                    # TA project (auto-detected)"
+    );
     println!("  3. meridian analyze --source jsonl --path work.jsonl  # standalone log");
     println!("  4. meridian analyze --source claude_code              # Claude Code sessions");
     Ok(())

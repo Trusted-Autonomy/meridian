@@ -60,6 +60,9 @@ pub fn load_jsonl(path: &Path) -> Result<Vec<UsageRecord>> {
             source: entry.source.unwrap_or_else(|| "jsonl".to_string()),
             phase: entry.phase,
             metadata,
+            prompt: None,
+            objective: None,
+            credits_consumed: None,
         });
     }
     Ok(records)

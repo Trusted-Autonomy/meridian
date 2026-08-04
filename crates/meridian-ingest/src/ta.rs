@@ -48,6 +48,9 @@ impl TaSource {
                 source: "ta".to_string(),
                 phase: entry.plan_phase,
                 metadata,
+                prompt: None,
+                objective: None,
+                credits_consumed: None,
             });
         }
         Ok(records)
