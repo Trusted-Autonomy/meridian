@@ -3,7 +3,11 @@
 // Each session file: ~/.claude/projects/<project-hash>/<uuid>.jsonl
 // Produces one UsageRecord per session with:
 //   - title: ai-title record content, or first user message (first 120 chars)
-//   - effort: sum of input+cache_creation tokens (input) and output tokens across all assistant turns
+//   - effort: sum of input+cache_creation tokens (input) and output tokens across all assistant turns,
+//     counting each API message once (streamed rows repeat a `message.id`; the last row wins) and
+//     skipping `<synthetic>` rows the client inserts without calling the API
+//   - metadata["cache_read_tokens"]: cache-read tokens, kept out of `effort` (priced ~10x lower) but
+//     recorded because they dominate long sessions
 //   - source: "claude-code"
 //   - metadata["project"]: decoded path from directory name
 
@@ -80,6 +84,10 @@ pub fn load_session(session_file: &Path, project_path: &str) -> Result<Option<Us
     let mut timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut total_input: u64 = 0;
     let mut total_output: u64 = 0;
+    let mut total_cache_read: u64 = 0;
+    // Usage keyed by message id; the last row for an id wins. Rows without an id are summed as-is.
+    let mut by_id: HashMap<String, Usage> = HashMap::new();
+    let mut no_id: Vec<Usage> = Vec::new();
     let mut has_user_turn = false;
 
     for line in content.lines() {
@@ -137,24 +145,32 @@ pub fn load_session(session_file: &Path, project_path: &str) -> Result<Option<Us
                 }
             }
             "assistant" => {
-                if let Some(usage) = record.get("message").and_then(|m| m.get("usage")) {
-                    total_input += usage
-                        .get("input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    total_input += usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    // cache_read_input_tokens excluded — ~10x cheaper, distorts cost signal
-                    total_output += usage
-                        .get("output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                let message = record.get("message");
+                if message
+                    .and_then(|m| m.get("model"))
+                    .and_then(|v| v.as_str())
+                    == Some("<synthetic>")
+                {
+                    continue;
+                }
+                if let Some(usage) = message.and_then(|m| m.get("usage")) {
+                    let u = Usage::from_value(usage);
+                    match message.and_then(|m| m.get("id")).and_then(|v| v.as_str()) {
+                        Some(id) => {
+                            by_id.insert(id.to_string(), u);
+                        }
+                        None => no_id.push(u),
+                    }
                 }
             }
             _ => {}
         }
+    }
+
+    for u in by_id.values().chain(no_id.iter()) {
+        total_input += u.input + u.cache_creation;
+        total_output += u.output;
+        total_cache_read += u.cache_read;
     }
 
     if !has_user_turn {
@@ -170,6 +186,10 @@ pub fn load_session(session_file: &Path, project_path: &str) -> Result<Option<Us
     let mut metadata = HashMap::new();
     metadata.insert("project".to_string(), project_path.to_string());
     metadata.insert("session_id".to_string(), session_id.clone());
+    metadata.insert(
+        "cache_read_tokens".to_string(),
+        total_cache_read.to_string(),
+    );
 
     Ok(Some(UsageRecord {
         id: session_id,
@@ -186,6 +206,26 @@ pub fn load_session(session_file: &Path, project_path: &str) -> Result<Option<Us
         objective: None,
         credits_consumed: None,
     }))
+}
+
+/// Token usage reported on one assistant message.
+struct Usage {
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+}
+
+impl Usage {
+    fn from_value(usage: &Value) -> Self {
+        let n = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        Usage {
+            input: n("input_tokens"),
+            cache_creation: n("cache_creation_input_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            output: n("output_tokens"),
+        }
+    }
 }
 
 fn extract_user_text(record: &Value) -> Option<String> {
@@ -289,5 +329,49 @@ mod tests {
                 output: 300
             }
         ));
+    }
+
+    fn write_session(lines: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-06-01T10:00:00Z","message":{{"role":"user","content":[{{"type":"text","text":"hi"}}]}}}}"#).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        (dir, path)
+    }
+
+    fn tokens(r: &UsageRecord) -> (u64, u64) {
+        match r.effort {
+            EffortUnits::Tokens { input, output } => (input, output),
+            _ => panic!("expected token effort"),
+        }
+    }
+
+    /// Streamed rows repeat one `message.id` with growing usage; only the last counts.
+    #[test]
+    fn repeated_message_id_is_counted_once_last_row_wins() {
+        let (_d, path) = write_session(&[
+            r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":5}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":40}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_2","usage":{"input_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000,"output_tokens":7}}}"#,
+        ]);
+        let r = load_session(&path, "/p").unwrap().unwrap();
+        // msg_1 once (10+100 in, 40 out) plus msg_2 (3 in, 7 out).
+        assert_eq!(tokens(&r), (113, 47));
+        assert_eq!(r.metadata.get("cache_read_tokens").unwrap(), "3000");
+    }
+
+    /// `<synthetic>` rows are client-inserted and never reached the API.
+    #[test]
+    fn synthetic_rows_are_skipped() {
+        let (_d, path) = write_session(&[
+            r#"{"type":"assistant","message":{"id":"msg_s","model":"<synthetic>","usage":{"input_tokens":900,"cache_creation_input_tokens":0,"cache_read_input_tokens":900,"output_tokens":900}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_r","model":"claude-sonnet-5-5","usage":{"input_tokens":1,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4}}}"#,
+        ]);
+        let r = load_session(&path, "/p").unwrap().unwrap();
+        assert_eq!(tokens(&r), (3, 4));
+        assert_eq!(r.metadata.get("cache_read_tokens").unwrap(), "3");
     }
 }
