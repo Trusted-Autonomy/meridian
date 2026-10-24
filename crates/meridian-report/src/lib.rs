@@ -6,3 +6,4 @@ pub mod pm;
 pub mod suggest;
 pub mod summary;
 pub mod table;
+pub mod title_cache;

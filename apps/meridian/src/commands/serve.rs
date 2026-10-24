@@ -378,7 +378,7 @@ impl MeridianMcpServer {
         let suggest_cfg = suggest_lib::SuggestConfig {
             threshold: config.suggest.threshold,
             sample_size: config.suggest.sample_size,
-            model: config.suggest.model.clone(),
+            model: config.suggest.effective_model(),
             api_key,
             use_claude_cli,
         };

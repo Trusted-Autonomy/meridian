@@ -11,3 +11,6 @@ chrono.workspace = true
 meridian-core = { path = "../meridian-core" }
 meridian-config = { path = "../meridian-config" }
 reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true

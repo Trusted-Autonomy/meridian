@@ -339,6 +339,32 @@ weight = 1.0
 # model = "claude-haiku-4-5-20251001"
 ```
 
+### Cost of `summarize-title` and `suggest` via the `claude` CLI
+
+When no API key is set, `meridian summarize-title` (and the `meridian_summarize_title` MCP tool) and
+`meridian suggest` fall back to your `claude` login. They run a deliberately minimal headless call so a
+one-line job does not pay for a full Claude Code session:
+
+```
+claude --print --model <model> --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+       --disable-slash-commands --setting-sources project --no-session-persistence \
+       --system-prompt "<short fixed prompt>"        # prompt text is sent on stdin
+```
+
+It runs from an empty temp directory (`$TMPDIR/meridian-claude-cwd-<user>`), so no project `CLAUDE.md`
+is loaded. No tools, MCP servers or skills are loaded either.
+
+- **Model**: `[suggest] model` in `meridian.toml` (default `claude-haiku-4-5-20251001`), or the
+  `MERIDIAN_SUGGEST_MODEL` environment variable, which wins when set. The same setting is used for the
+  Anthropic HTTP API path.
+- **No call for short text**: if the text left after stripping injected context is a single line of at most
+  8 words (and 100 characters), it is already a valid title and is returned directly (surrounding quotes,
+  leading `#` and trailing punctuation removed).
+- **Title cache**: the same text + model returns the stored title without a model call. Entries are small
+  JSON files in `$MERIDIAN_CACHE_DIR/titles` (default `$XDG_CACHE_HOME/meridian/titles`, else
+  `~/.cache/meridian/titles`); a hit requires an exact text and model match. Set `MERIDIAN_TITLE_CACHE=off`
+  to disable it; delete the directory to clear it. Entries are never pruned automatically.
+
 ---
 
 ## Commands

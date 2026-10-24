@@ -55,7 +55,8 @@ weight = 0.9
 # [suggest]
 # threshold = 0.25           # 0-1.0; categories below this get suggestions
 # sample_size = 5            # titles to include as context
-# model = "claude-haiku-4-5-20251001"
+# model = "claude-haiku-4-5-20251001"   # used by `suggest` and `summarize-title` (HTTP API and the
+#                                         # `claude` CLI); MERIDIAN_SUGGEST_MODEL overrides per process
 
 # --- Per-entry KPI alignment tiers (used by `meridian report`) ----------------
 # Every record's *best* KPI-fit score (the highest of its per-KPI scores) is

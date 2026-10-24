@@ -90,7 +90,9 @@ pub struct SuggestConfig {
     /// Max record titles to include as context per suggestion
     #[serde(default = "default_sample_size")]
     pub sample_size: usize,
-    /// Claude model to use for suggestions
+    /// Claude model used for suggestions and title extraction (both the HTTP API and
+    /// the `claude` CLI path). Overridable per-process with `MERIDIAN_SUGGEST_MODEL`
+    /// (see `SuggestConfig::effective_model`). Default is a small, cheap model.
     #[serde(default = "default_suggest_model")]
     pub model: String,
     /// Explicit API key (prefer ANTHROPIC_API_KEY env var instead)
@@ -115,6 +117,27 @@ impl Default for SuggestConfig {
             model: default_suggest_model(),
             api_key: None,
         }
+    }
+}
+
+/// Environment variable that overrides `[suggest] model` for a single process.
+pub const SUGGEST_MODEL_ENV: &str = "MERIDIAN_SUGGEST_MODEL";
+
+impl SuggestConfig {
+    /// The model to actually use: `MERIDIAN_SUGGEST_MODEL` when set to a non-blank
+    /// value, otherwise the configured `model`.
+    pub fn effective_model(&self) -> String {
+        resolve_model(
+            std::env::var(SUGGEST_MODEL_ENV).ok().as_deref(),
+            &self.model,
+        )
+    }
+}
+
+fn resolve_model(env_value: Option<&str>, configured: &str) -> String {
+    match env_value.map(str::trim) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => configured.to_string(),
     }
 }
 
@@ -221,6 +244,27 @@ impl MeridianConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_env_override_wins_over_config() {
+        assert_eq!(resolve_model(Some("claude-x"), "claude-haiku"), "claude-x");
+        assert_eq!(
+            resolve_model(Some("  claude-x \n"), "claude-haiku"),
+            "claude-x"
+        );
+    }
+
+    #[test]
+    fn blank_or_missing_env_falls_back_to_config() {
+        assert_eq!(resolve_model(None, "claude-haiku"), "claude-haiku");
+        assert_eq!(resolve_model(Some("   "), "claude-haiku"), "claude-haiku");
+        assert_eq!(resolve_model(Some(""), "claude-haiku"), "claude-haiku");
+    }
+
+    #[test]
+    fn default_suggest_model_is_the_cheap_haiku_tier() {
+        assert!(SuggestConfig::default().model.contains("haiku"));
+    }
 
     #[test]
     fn default_uses_builtin_categories() {
