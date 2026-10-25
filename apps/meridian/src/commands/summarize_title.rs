@@ -43,7 +43,7 @@ pub fn run(args: SummarizeTitleArgs, config_path: &Path) -> Result<()> {
     let suggest_cfg = suggest_lib::SuggestConfig {
         threshold: cfg.suggest.threshold,
         sample_size: cfg.suggest.sample_size,
-        model: cfg.suggest.model.clone(),
+        model: cfg.suggest.effective_model(),
         api_key,
         use_claude_cli,
     };

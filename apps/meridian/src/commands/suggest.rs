@@ -113,7 +113,7 @@ pub fn run(args: SuggestArgs, config_path: &Path) -> Result<()> {
     let suggest_config = suggest_lib::SuggestConfig {
         threshold,
         sample_size: config.suggest.sample_size,
-        model: config.suggest.model.clone(),
+        model: config.suggest.effective_model(),
         api_key,
         use_claude_cli,
     };
